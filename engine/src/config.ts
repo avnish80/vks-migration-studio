@@ -1,3 +1,4 @@
+import os from 'node:os';
 import path from 'node:path';
 
 export interface Config {
@@ -14,6 +15,10 @@ export interface Config {
   token?: string;
   /** Base URL printed in the sign-in link, when users reach the engine through a proxy. */
   publicUrl?: string;
+  /** kubectl and Python executables, and the kubeconfig the engine reads (never writes). */
+  kubectl: string;
+  python: string;
+  kubeconfig: string;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -30,5 +35,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     allowedHosts: (env.STUDIO_ALLOWED_HOSTS ?? '').split(',').map(h => h.trim().toLowerCase()).filter(Boolean).map(h => h.startsWith('[') ? h.slice(0, h.indexOf(']') + 1) : h.split(':')[0] ?? h),
     token: env.STUDIO_TOKEN || undefined,
     publicUrl: env.STUDIO_PUBLIC_URL ? env.STUDIO_PUBLIC_URL.replace(/\/+$/, '') : undefined,
+    kubectl: env.STUDIO_KUBECTL || 'kubectl',
+    python: env.STUDIO_PYTHON || 'python3',
+    kubeconfig: env.KUBECONFIG || path.join(os.homedir(), '.kube', 'config'),
   };
 }

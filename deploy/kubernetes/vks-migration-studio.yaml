@@ -1,0 +1,104 @@
+# VKS Migration Studio engine, one replica, for a VKS (or any Kubernetes) cluster.
+# Open it with:  kubectl -n vks-migration-studio port-forward svc/vks-migration-studio 8080:8080
+# Sign-in token: kubectl -n vks-migration-studio exec deploy/vks-migration-studio -- cat /data/token
+# Clusters it should reach come from the optional Secret "studio-kubeconfig" (key: config).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vks-migration-studio
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vks-migration-studio
+  namespace: vks-migration-studio
+# The engine does not use the API of the cluster it runs on.
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: studio-data
+  namespace: vks-migration-studio
+spec:
+  accessModes: [ReadWriteOnce]
+  # storageClassName: <your VKS storage class>   # uncomment if the cluster has no default class
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vks-migration-studio
+  namespace: vks-migration-studio
+  labels: { app.kubernetes.io/name: vks-migration-studio }
+spec:
+  replicas: 1                       # SQLite: exactly one writer
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: vks-migration-studio }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: vks-migration-studio }
+    spec:
+      serviceAccountName: vks-migration-studio
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: engine
+          image: ghcr.io/avnish80/vks-migration-studio:1.1.0-alpha.1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - { name: KUBECONFIG, value: /etc/studio/kubeconfig/config }
+            - { name: HOME, value: /tmp }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          # The engine only answers to local host names, so probes say "localhost".
+          readinessProbe:
+            httpGet: { path: /api/health, port: http, httpHeaders: [{ name: Host, value: localhost }] }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /api/health, port: http, httpHeaders: [{ name: Host, value: localhost }] }
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "2", memory: 2Gi }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: tmp, mountPath: /tmp }
+            - { name: kubeconfig, mountPath: /etc/studio/kubeconfig, readOnly: true }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: studio-data }
+        - name: tmp
+          emptyDir: { sizeLimit: 2Gi }
+        - name: kubeconfig
+          secret:
+            secretName: studio-kubeconfig
+            optional: true
+            defaultMode: 0440
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vks-migration-studio
+  namespace: vks-migration-studio
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: vks-migration-studio }
+  ports:
+    - { name: http, port: 8080, targetPort: http }

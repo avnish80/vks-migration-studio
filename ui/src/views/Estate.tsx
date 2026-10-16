@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, type Project } from '../api';
-import { addUnsavedGuard } from '../router';
+import { addUnsavedGuard, navigate } from '../router';
+import { ProjectView } from './Project';
 
-export function Estate() {
+export function Estate({ projectId }: { projectId: string | null }) {
+  if (projectId) return <ProjectView key={projectId} id={projectId} />;
+  return <ProjectList />;
+}
+
+function ProjectList() {
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [error, setError] = useState<string>();
   const [creating, setCreating] = useState(false);
@@ -12,16 +18,13 @@ export function Estate() {
   return (
     <>
       <header>
-        <div><h1>Estate</h1><p className="lede">Migration projects and, from milestone 1.1, every workload they contain.</p></div>
+        <div><h1>Estate</h1><p className="lede">Migration projects. Open one to see its clusters, inventory and workloads.</p></div>
         {!creating && <button className="btn" onClick={() => setCreating(true)}>New project</button>}
       </header>
       {error && <div className="alert error" role="alert">{error}</div>}
       {projects && (
         <div className="tiles" aria-label="Summary">
           <div className="tile"><div className="k">Projects</div><div className="v">{projects.length}</div></div>
-          <div className="tile"><div className="k">Workloads</div><div className="v">—</div></div>
-          <div className="tile"><div className="k">Active pilot runs</div><div className="v">—</div></div>
-          <div className="tile"><div className="k">Blocked</div><div className="v">—</div></div>
         </div>
       )}
       {creating && <NewProject onDone={created => { setCreating(false); if (created) void load(); }} />}
@@ -36,7 +39,7 @@ export function Estate() {
         <table>
           <thead><tr><th>Project</th><th>Description</th><th>Created</th></tr></thead>
           <tbody>{projects.map(p => (
-            <tr key={p.id}><td>{p.name}</td><td>{p.description || <span className="hint">—</span>}</td><td>{new Date(p.createdAt).toLocaleDateString()}</td></tr>
+            <tr key={p.id} className="clickable" onClick={() => navigate(`/estate?project=${encodeURIComponent(p.id)}`)}><td><a href={`/estate?project=${encodeURIComponent(p.id)}`} onClick={e => { e.preventDefault(); navigate(`/estate?project=${encodeURIComponent(p.id)}`); }}>{p.name}</a></td><td>{p.description || <span className="hint">—</span>}</td><td>{new Date(p.createdAt).toLocaleDateString()}</td></tr>
           ))}</tbody>
         </table>
       )}

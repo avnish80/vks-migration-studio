@@ -8,6 +8,7 @@ import { openDatabase, migrate } from '../src/db/index.js';
 import { loadCore } from '../src/core.js';
 import { loadConfig } from '../src/config.js';
 import { auth, makeApp } from './helpers.js';
+import { VERSION } from '../src/version.js';
 
 let app: FastifyInstance | undefined;
 afterEach(async () => { await app?.close(); app = undefined; });
@@ -34,7 +35,7 @@ describe('start-up', () => {
   it('migrates a file database idempotently', async () => {
     const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'studio-db-')), 'studio.db');
     let db = openDatabase(file);
-    expect(await migrate(db)).toEqual(['001_initial']);
+    expect(await migrate(db)).toEqual(['001_initial', '002_inventory']);
     await db.destroy();
     db = openDatabase(file);
     expect(await migrate(db)).toEqual([]);
@@ -49,7 +50,7 @@ describe('start-up', () => {
     const demo = JSON.parse(fs.readFileSync(path.join(core.dir, 'demo.json'), 'utf8'));
     expect(engine.analyze(demo).findings.length).toBeGreaterThan(0);
     ({ app } = await makeApp());
-    expect((await app.inject({ url: '/api/version', headers: auth })).json()).toMatchObject({ version: '1.0.0-alpha.1' });
+    expect((await app.inject({ url: '/api/version', headers: auth })).json()).toMatchObject({ version: VERSION });
   });
 
   it('serves the UI shell for client routes but JSON 404 for unknown API paths', async () => {

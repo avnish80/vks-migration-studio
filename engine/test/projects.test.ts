@@ -45,7 +45,7 @@ describe('projects and audit', () => {
     ({ app, db } = await makeApp());
     const now = new Date().toISOString();
     await db.insertInto('projects').values({ id: 'p', name: 'p', description: '', source_cluster_id: null, target_cluster_id: null, settings: '{}', created_at: now, updated_at: now }).execute();
-    await db.insertInto('workloads').values({ id: 'w', project_id: 'p', resource_id: 'app/Deployment/web', state: 'Planned', wave_id: null, updated_at: now }).execute();
+    await db.insertInto('workloads').values({ id: 'w', project_id: 'p', resource_id: 'app/Deployment/web', kind: 'Deployment', namespace: 'app', name: 'web', snapshot_id: null, state: 'Planned', wave_id: null, updated_at: now }).execute();
     await db.insertInto('blobs').values({ hash: 'h', size: 0, compressed: Buffer.alloc(0), created_at: now }).execute();
     await db.insertInto('plans').values({ id: 'plan', workload_id: 'w', input_hash: 'i', blob_hash: 'h', created_at: now }).execute();
     const run = (id: string, state: string) => db.insertInto('runs').values({ id, plan_id: 'plan', workload_id: 'w', run_label: id, state, lease_owner: null, heartbeat_at: null, created_at: now, updated_at: now }).execute();

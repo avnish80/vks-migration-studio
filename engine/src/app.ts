@@ -8,6 +8,9 @@ import { tokenMatches } from './token.js';
 import { systemRoutes } from './routes/system.js';
 import { projectRoutes } from './routes/projects.js';
 import { auditRoutes } from './routes/audit.js';
+import { clusterRoutes } from './routes/clusters.js';
+import { inventoryRoutes } from './routes/inventory.js';
+import type { JobRunner } from './jobs.js';
 
 declare module 'fastify' {
   interface FastifyContextConfig { public?: boolean }
@@ -39,14 +42,14 @@ export function isApiRequest(request: { routeOptions: { url?: string }; url: str
   return path.toLowerCase().replace(/\/+/g, '/').startsWith('/api/');
 }
 
-export interface AppOptions { config: Config; db: DB; core: Core; token: string; logger?: boolean }
+export interface AppOptions { config: Config; db: DB; core: Core; token: string; jobs: JobRunner; logger?: boolean }
 
 /** Request URLs are logged without the sign-in token (it arrives once as ?token=). */
 export function redactUrl(url: string): string {
   return url.replace(/([?&]token=)[^&#]*/gi, '$1REDACTED');
 }
 
-export async function buildApp({ config, db, core, token, logger = false }: AppOptions): Promise<FastifyInstance> {
+export async function buildApp({ config, db, core, token, jobs, logger = false }: AppOptions): Promise<FastifyInstance> {
   // Strict validation: no silent type coercion and no silent stripping of unknown fields.
   const app = Fastify({ logger: logger ? { serializers: { req: (req: { method: string; url: string }) => ({ method: req.method, url: redactUrl(req.url) }) } } : false, bodyLimit: 1024 * 1024, trustProxy: false, ajv: { customOptions: { removeAdditional: false, coerceTypes: false, useDefaults: true } } });
   const allowed = new Set([...LOCAL_HOSTS, ...config.allowedHosts]);
@@ -91,6 +94,8 @@ export async function buildApp({ config, db, core, token, logger = false }: AppO
   systemRoutes(app, core);
   projectRoutes(app, db);
   auditRoutes(app, db);
+  clusterRoutes(app, db, config);
+  inventoryRoutes(app, db, core, config, jobs);
 
   const uiBuilt = fs.existsSync(config.uiDir) && fs.existsSync(`${config.uiDir}/index.html`);
   if (uiBuilt) await app.register(fastifyStatic, { root: config.uiDir, wildcard: false, index: ['index.html'] });

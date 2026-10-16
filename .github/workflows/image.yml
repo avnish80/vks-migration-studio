@@ -37,9 +37,49 @@ jobs:
           docker exec studio skopeo --version
           docker exec studio python3 --version
           test "$(docker exec studio id -u)" = 10001
+          # The planning core runs inside the image: load the demo inventory and expect its workloads.
+          T=$(printf 's%.0s' $(seq 1 40)); H="Authorization: Bearer $T"
+          P=$(curl -fsS -H "$H" -H 'content-type: application/json' -d '{"name":"smoke"}' http://127.0.0.1:8080/api/projects | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+          curl -fsS -X POST -H "$H" http://127.0.0.1:8080/api/projects/$P/demo
+          test "$(curl -fsS -H "$H" http://127.0.0.1:8080/api/projects/$P/workloads | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["items"]))')" = 4
       - name: Engine log
         if: always()
         run: docker logs studio || true
+
+      # Real cluster: deploy the manifest to kind under the restricted pod security standard, give the
+      # engine a read-only collector login for that cluster, and collect a real inventory through the API.
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: studio
+      - name: Deploy to kind and collect
+        run: |
+          set -euo pipefail
+          kind load docker-image studio:test --name studio
+          sed 's#image: ghcr.io/avnish80/vks-migration-studio:.*#image: studio:test#; s#imagePullPolicy: IfNotPresent#imagePullPolicy: Never#' deploy/kubernetes/vks-migration-studio.yaml | kubectl apply -f -
+          ctx=$(kubectl config current-context)
+          scripts/collector-kubeconfig.sh "$ctx" /tmp/collector.kubeconfig
+          # Inside the cluster the API server is kubernetes.default.svc, not the host port kind exposes.
+          sed -i 's#server: .*#server: https://kubernetes.default.svc#' /tmp/collector.kubeconfig
+          kubectl -n vks-migration-studio create secret generic studio-kubeconfig --from-file=config=/tmp/collector.kubeconfig
+          kubectl -n vks-migration-studio set env deploy/vks-migration-studio STUDIO_TOKEN=$(printf 'k%.0s' $(seq 1 40))
+          kubectl -n vks-migration-studio rollout status deploy/vks-migration-studio --timeout=180s
+          kubectl -n vks-migration-studio port-forward svc/vks-migration-studio 18080:8080 >/tmp/pf.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:18080/api/health && break; sleep 1; done
+          A="Authorization: Bearer $(printf 'k%.0s' $(seq 1 40))"; J='content-type: application/json'; U=http://127.0.0.1:18080/api
+          curl -fsS -H "$A" $U/kube/contexts
+          C=$(curl -fsS -H "$A" -H "$J" -d "{\"contextName\":\"$ctx\",\"role\":\"source\"}" $U/clusters | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+          P=$(curl -fsS -H "$A" -H "$J" -d '{"name":"kind"}' $U/projects | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+          curl -fsS -X PATCH -H "$A" -H "$J" -d "{\"sourceClusterId\":\"$C\"}" $U/projects/$P/clusters
+          JOB=$(curl -fsS -H "$A" -H "$J" -d '{"side":"source"}' $U/projects/$P/collect | python3 -c 'import json,sys;print(json.load(sys.stdin)["jobId"])')
+          for i in $(seq 1 120); do
+            S=$(curl -fsS -H "$A" $U/jobs/$JOB | python3 -c 'import json,sys;j=json.load(sys.stdin);print(j["state"], j.get("error") or "")')
+            case "$S" in Succeeded*) break;; Failed*) echo "$S"; exit 1;; esac; sleep 2
+          done
+          curl -fsS -H "$A" $U/projects/$P/workloads | python3 -c 'import json,sys;w=json.load(sys.stdin)["items"];print(len(w),"workloads");assert any(x["resource"]=="kube-system/Deployment/coredns" for x in w)'
+          curl -fsS -H "$A" $U/projects/$P/snapshots | python3 -c 'import json,sys;s=json.load(sys.stdin)["items"][0];print(s["resources"],"resources; errors:",s["coverage"]["errors"]);assert not [e for e in s["coverage"]["errors"] if e["reason"]=="Forbidden"]'
+      - name: Cluster engine log
+        if: always()
+        run: kubectl -n vks-migration-studio logs deploy/vks-migration-studio --tail=200 || true
 
   # Tags: multi-arch build, push to GHCR with SBOM and provenance, sign with cosign (keyless).
   release:

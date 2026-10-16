@@ -5,6 +5,8 @@ import { loadCore } from './core.js';
 import { loadOrCreateToken } from './token.js';
 import { buildApp } from './app.js';
 import { VERSION } from './version.js';
+import { JobRunner } from './jobs.js';
+import { collectHandler } from './collect.js';
 
 async function main(): Promise<void> {
   // Everything the engine writes (database, token) is private to its user.
@@ -14,8 +16,10 @@ async function main(): Promise<void> {
   const applied = await migrate(db);
   const core = loadCore(config.coreDir);
   const { token, created } = loadOrCreateToken(config.dataDir, config.token);
-  const app = await buildApp({ config, db, core, token, logger: true });
+  const jobs = new JobRunner(db, { collect: collectHandler(db, core, config) });
+  const app = await buildApp({ config, db, core, token, jobs, logger: true });
   await app.listen({ host: config.host, port: config.port });
+  jobs.start();
   const shown = config.host === '0.0.0.0' || config.host === '::' ? '127.0.0.1' : config.host;
   const base = config.publicUrl ?? `http://${shown}:${config.port}`;
   process.stdout.write(`\nVKS Migration Studio ${VERSION}\n` +
@@ -23,7 +27,7 @@ async function main(): Promise<void> {
     (created ? `\nOpen this link to sign in (shown once; the token is stored in ${path.join(config.dataDir, 'token')}):\n  ${base}/?token=${token}\n\n`
              : config.token ? `\nOpen ${base}/ and sign in with the token set in STUDIO_TOKEN.\n\n`
              : `\nOpen ${base}/ and sign in with the token stored in ${path.join(config.dataDir, 'token')}.\n\n`));
-  const stop = async () => { await app.close(); await db.destroy(); process.exit(0); };
+  const stop = async () => { await jobs.stop(); await app.close(); await db.destroy(); process.exit(0); };
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
 }

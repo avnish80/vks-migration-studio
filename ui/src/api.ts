@@ -41,6 +41,16 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return body as T;
 }
 
-export interface Project { id: string; name: string; description: string; createdAt: string; updatedAt: string }
+export interface Project { id: string; name: string; description: string; sourceClusterId: string | null; targetClusterId: string | null; createdAt: string; updatedAt: string }
+export type Side = 'source' | 'target';
+export interface KubeContext { name: string; cluster: string; server: string; namespace: string; current: boolean; registered: boolean }
+export interface Cluster { id: string; contextName: string; name: string; role: Side; clusterUid: string | null; lastSeenAt: string | null; lastError: string | null; createdAt: string }
+export interface Job { id: string; type: string; projectId: string | null; state: 'Queued' | 'Running' | 'Succeeded' | 'Failed'; attempts: number; progress: string | null; result: unknown; error: string | null; createdAt: string; updatedAt: string }
+export interface Workload { id: string; resource: string; kind: string; namespace: string; name: string; state: string; blockers: number; reviews: number; updatedAt: string }
+export interface WorkloadList { snapshotId: string | null; findingsBySeverity: Record<string, number>; estateFindings: number; items: Workload[] }
+export interface Finding { id: string; resource: string; severity: string; category: string; title: string; evidence: string; action: string; validation: string }
+export interface WorkloadDetail extends Omit<Workload, 'blockers' | 'reviews' | 'updatedAt'> { findings: Finding[]; edges: { from: string; to: string; type: string }[] }
+export interface Snapshot { id: string; side: Side; origin: 'collected' | 'imported' | 'demo'; resources: number; collectedAt: string; storedAt: string; context: string | null; coverage: { complete: boolean; queried: number; errors: { resource: string; reason: string }[] } }
+export interface Diff { snapshotId: string; previousId: string | null; counts: Record<string, number>; rows: { id: string; change: string }[]; truncated: boolean }
 export interface AuditEntry { seq: number; at: string; actor: string; action: string; subject: string; detail: Record<string, unknown> }
 export interface Version { version: string; coreModules: string[] }

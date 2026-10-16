@@ -101,6 +101,49 @@ const initial: Migration = {
   },
 };
 
-export const migrations: Record<string, Migration> = { '001_initial': initial };
+const inventory: Migration = {
+  // SQLite supports transactional DDL; Kysely's migrator does not use it, so the whole step runs in
+  // one transaction here: a failure leaves the 1.0 schema untouched and the step can simply be retried.
+  async up(db: Kysely<any>) {
+    await db.transaction().execute(async trx => {
+      // Snapshots can come from a registered cluster, a file import or the demo inventory.
+      // stored_at orders snapshots; collected_at is what the inventory reports and is display only.
+      await sql`create table snapshots_new (
+        id text primary key,
+        project_id text not null references projects(id),
+        side text not null check (side in ('source','target')),
+        origin text not null check (origin in ('collected','imported','demo')),
+        cluster_id text references clusters(id),
+        blob_hash text not null references blobs(hash),
+        analysis_hash text references blobs(hash),
+        resource_count integer not null default 0,
+        collected_at text not null,
+        stored_at text not null,
+        coverage text not null default '{}'
+      )`.execute(trx);
+      await sql`insert into snapshots_new (id, project_id, side, origin, cluster_id, blob_hash, collected_at, stored_at, coverage)
+        select s.id, s.project_id, coalesce(c.role, 'source'), 'collected', s.cluster_id, s.blob_hash, s.collected_at, s.collected_at, s.coverage from snapshots s left join clusters c on c.id = s.cluster_id`.execute(trx);
+      await sql`drop table snapshots`.execute(trx);
+      await sql`alter table snapshots_new rename to snapshots`.execute(trx);
+      await trx.schema.createIndex('snapshots_project_side').on('snapshots').columns(['project_id', 'side', 'stored_at']).execute();
+
+      await trx.schema.alterTable('clusters').addColumn('name', 'text').execute();
+      await trx.schema.alterTable('clusters').addColumn('last_error', 'text').execute();
+      await trx.schema.alterTable('clusters').addColumn('retired_at', 'text').execute();
+      // 1.0 did not enforce unique context names; keep the oldest and retire later duplicates.
+      await sql`update clusters set context_name = context_name || '#retired-' || substr(id, 1, 8), retired_at = created_at
+        where exists (select 1 from clusters o where o.context_name = clusters.context_name and (o.created_at < clusters.created_at or (o.created_at = clusters.created_at and o.id < clusters.id)))`.execute(trx);
+      await trx.schema.createIndex('clusters_context').on('clusters').column('context_name').unique().execute();
+
+      for (const [column, type] of [['kind', 'text'], ['namespace', 'text'], ['name', 'text'], ['snapshot_id', 'text'], ['blockers', 'integer'], ['reviews', 'integer']] as const) {
+        await trx.schema.alterTable('workloads').addColumn(column, type, c => (type === 'integer' ? c.notNull().defaultTo(0) : c)).execute();
+      }
+      for (const column of ['project_id', 'progress', 'result', 'error']) await trx.schema.alterTable('jobs').addColumn(column, 'text').execute();
+      await trx.schema.createIndex('jobs_project').on('jobs').columns(['project_id', 'created_at']).execute();
+    });
+  },
+};
+
+export const migrations: Record<string, Migration> = { '001_initial': initial, '002_inventory': inventory };
 
 export const provider: MigrationProvider = { getMigrations: async () => migrations };

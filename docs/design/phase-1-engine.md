@@ -234,6 +234,12 @@ Design rules carried from the review:
 | **1.3 Hardening** | Engine restart mid-run recovers; token expiry pauses jobs; audit log complete; metrics; lab test on real VKS |
 | **1.4 Native adapter** | TypeScript Kubernetes adapter replaces the Python pilot runner inside the engine; same tests pass |
 
+### Running where Docker is not available (added 16 Oct 2026)
+
+Some users cannot install Docker or npm on their workstation. Two supported paths:
+- **GitHub Codespaces** for trying the UI (`.devcontainer`), with demo or imported inventories.
+- **A single-replica Deployment on a VKS cluster** (`deploy/kubernetes/`), reached with `kubectl port-forward`. The engine reads clusters through a kubeconfig Secret, normally built from read-only collector service accounts (`scripts/collector-kubeconfig.sh`). This brings part of phase 2's in-cluster mode forward; the Helm chart, OIDC and multiple users stay in phase 2. Pilot runs in 1.2 will need a separate, scoped write identity for the target namespace.
+
 ## 8. Decisions
 
 **Settled (16 Oct 2026)**
