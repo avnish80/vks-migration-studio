@@ -79,14 +79,17 @@ function generate(raw,options={}){
 }
 function targetConsumers(target,ns,deployment,services){
  // Existing target objects that would send traffic to, or scale, the pilot as soon as it is created.
- const out=[],inNS=r=>(r.metadata?.namespace||'default')===ns,svc=new Set(services),list=v=>Array.isArray(v)?v:[];
- for(const r of target.items.filter(inNS)){
-  const id=E.id(r),spec=r.spec||{};
-  if(r.kind==='Ingress'){const refs=[spec.defaultBackend?.service?.name,...list(spec.rules).flatMap(x=>list(x.http?.paths).map(p=>p.backend?.service?.name))];for(const n of new Set(refs.filter(n=>svc.has(n))))out.push({resource:id,reason:`Existing target Ingress routes to Service ${n}; the pilot Service would receive traffic as soon as it is created. Remove or repoint the route first.`});}
-  if(['HTTPRoute','GRPCRoute','TLSRoute','TCPRoute','UDPRoute'].includes(r.kind)){const refs=list(spec.rules).flatMap(x=>list(x.backendRefs)).filter(b=>(b.kind||'Service')==='Service'&&!b.group&&(b.namespace||ns)===ns).map(b=>b.name);for(const n of new Set(refs.filter(n=>svc.has(n))))out.push({resource:id,reason:`Existing target ${r.kind} routes to Service ${n}; the pilot Service would receive traffic as soon as it is created. Remove or repoint the route first.`});}
+ const out=[],svc=new Set(services),obj=v=>v&&typeof v==='object'&&!Array.isArray(v)?v:{},list=v=>Array.isArray(v)?v.filter(x=>x&&typeof x==='object'):[];
+ const route=(id,kind,names)=>{for(const n of new Set(names.filter(n=>svc.has(n))))out.push({resource:id,reason:`Existing target ${kind} routes to Service ${n}; the pilot Service would receive traffic as soon as it is created. Remove or repoint the route first.`});};
+ const local=b=>(b.kind||'Service')==='Service'&&!b.group&&(b.namespace||ns)===ns;
+ for(const r of list(target?.items).filter(r=>(obj(r.metadata).namespace||'default')===ns)){
+  const id=E.id(r),spec=obj(r.spec);
+  if(r.kind==='Ingress')route(id,'Ingress',[obj(obj(spec.defaultBackend).service).name,...list(spec.rules).flatMap(x=>list(obj(x.http).paths).map(p=>obj(obj(p.backend).service).name))]);
+  if(['HTTPRoute','GRPCRoute','TLSRoute','TCPRoute','UDPRoute'].includes(r.kind))route(id,r.kind,list(spec.rules).flatMap(x=>[...list(x.backendRefs),...list(x.filters).map(f=>obj(obj(f.requestMirror).backendRef)),...list(x.backendRefs).flatMap(b=>list(b.filters).map(f=>obj(obj(f.requestMirror).backendRef)))]).filter(local).map(b=>b.name));
+  if(r.kind==='HTTPProxy')route(id,'HTTPProxy',[...list(spec.routes).flatMap(x=>list(x.services)),...list(obj(spec.tcpproxy).services)].map(x=>x.name));
   if(r.kind==='ReferenceGrant'&&list(spec.to).some(t=>!t.group&&t.kind==='Service'&&(!t.name||svc.has(t.name))))out.push({resource:id,reason:'ReferenceGrant allows routes in other namespaces to reach pilot Services. Review cross-namespace routes first.'});
-  const ref=r.kind==='HorizontalPodAutoscaler'||r.kind==='ScaledObject'?spec.scaleTargetRef:r.kind==='VerticalPodAutoscaler'?spec.targetRef:null;
-  if(ref&&(ref.kind||'Deployment')==='Deployment'&&ref.name===deployment)out.push({resource:id,reason:`Existing target ${r.kind} targets Deployment ${deployment}; it would change the one-replica pilot. Remove it before the pilot.`});
+  const ref=obj(r.kind==='HorizontalPodAutoscaler'||r.kind==='ScaledObject'?spec.scaleTargetRef:r.kind==='VerticalPodAutoscaler'?spec.targetRef:null);
+  if((ref.kind||'Deployment')==='Deployment'&&ref.name===deployment)out.push({resource:id,reason:`Existing target ${r.kind} targets Deployment ${deployment}; it would change the one-replica pilot. Remove it before the pilot.`});
  }
  return out;
 }

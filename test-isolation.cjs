@@ -28,4 +28,10 @@ const unrelated=[
 assert.equal(X.plan(source,{...target,items:[...target.items,...unrelated]},options).blockers.length,0,'unrelated routes and autoscalers must not block');
 // Robust against malformed target objects.
 assert.deepEqual(P.targetConsumers({items:[{kind:'Ingress',metadata:{name:'x',namespace:'app'},spec:{rules:'bad'}},{kind:'HTTPRoute',metadata:{name:'y',namespace:'app'}}]},'app','web',['web']),[]);
-console.log('Isolation tests passed: Ingress, default backend, Gateway routes, ReferenceGrant, HPA, KEDA and VPA consumers block; unrelated and other-namespace objects do not.');
+// Null entries anywhere in route or autoscaler specs must not throw (they used to crash three views).
+assert.deepEqual(P.targetConsumers({items:[null,{kind:'Ingress',metadata:{name:'a',namespace:'app'},spec:{rules:[null,{http:{paths:[null]}}],defaultBackend:null}},{kind:'HTTPRoute',metadata:{name:'b',namespace:'app'},spec:{rules:[null,{backendRefs:[null],filters:[null,{requestMirror:null}]}]}},{kind:'ReferenceGrant',metadata:{name:'c',namespace:'app'},spec:{to:[null]}},{kind:'HorizontalPodAutoscaler',metadata:{name:'d',namespace:'app'},spec:{scaleTargetRef:null}}]},'app','web',['web']),[]);
+assert.equal(X.plan(source,{...target,items:[...target.items,{apiVersion:'networking.k8s.io/v1',kind:'Ingress',metadata:{name:'n',namespace:'app'},spec:{rules:[null]}}]},options).blockers.length,0);
+// Mirrored traffic and Contour HTTPProxy (the usual VKS ingress package) also count.
+assert.match(reasons([{apiVersion:'gateway.networking.k8s.io/v1',kind:'HTTPRoute',metadata:{name:'m',namespace:'app'},spec:{rules:[{backendRefs:[{name:'api',port:80}],filters:[{type:'RequestMirror',requestMirror:{backendRef:{name:'web',port:80}}}]}]}}]),/HTTPRoute routes to Service web/);
+assert.match(reasons([{apiVersion:'projectcontour.io/v1',kind:'HTTPProxy',metadata:{name:'p',namespace:'app'},spec:{virtualhost:{fqdn:'shop.example.com'},routes:[{services:[{name:'web',port:80}]}]}}]),/HTTPProxy routes to Service web/);
+console.log('Isolation tests passed: Ingress, default backend, Gateway routes and mirrors, Contour HTTPProxy, ReferenceGrant, HPA, KEDA and VPA consumers block; unrelated and other-namespace objects do not.');

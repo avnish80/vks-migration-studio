@@ -7,9 +7,13 @@ KINDS={'Deployment':'deployments.apps','Service':'services'}
 spec=importlib.util.spec_from_file_location('pilot_preflight',Path(__file__).with_name('target-preflight.py'));preflight=importlib.util.module_from_spec(spec);spec.loader.exec_module(preflight)
 def now():return datetime.datetime.now(datetime.timezone.utc).isoformat()
 def name(value):return preflight.text(value)
+class KubectlError(RuntimeError):
+    """kubectl exited non-zero. Output is kept for local decisions only and never written to receipts."""
+    def __init__(self,message,stdout='',stderr=''):super().__init__(message);self.stdout=stdout;self.stderr=stderr
+
 def command(context,args,body=None,timeout=60):
     result=subprocess.run(['kubectl','--context='+context,'--request-timeout=30s']+args,input=body,capture_output=True,text=True,timeout=timeout)
-    if result.returncode:raise RuntimeError('kubectl request failed; inspect the intended target locally. Raw diagnostics are omitted.')
+    if result.returncode:raise KubectlError('kubectl request failed; inspect the intended target locally. Raw diagnostics are omitted.',result.stdout,result.stderr)
     return result.stdout
 
 def validate_plan(p,context):
@@ -32,7 +36,6 @@ def validate_plan(p,context):
         seen.add(key);name(meta.get('name'))
         for m in [meta,r.get('spec',{}).get('template',{}).get('metadata',{})]:
             if any(re.search(r'argocd|helm\.sh|fluxcd|external-dns',k,re.I) for k in m.get('annotations',{})):raise ValueError('Inherited reconciliation/external DNS annotations require review')
-        if any(ownership_label(k) for k in meta.get('labels',{})):raise ValueError('Inherited Argo CD, Helm or Flux tracking labels require review')
         if kind=='Service' and (r.get('apiVersion')!='v1' or r['spec'].get('type','ClusterIP')!='ClusterIP' or any(r['spec'].get(k) for k in ['externalIPs','loadBalancerIP','loadBalancerClass','externalName']) or not r['spec'].get('selector') or not matches(labels,{'matchLabels':r['spec']['selector']}) or any(x.get('nodePort') for x in r['spec'].get('ports',[]))):raise ValueError('Only isolated ClusterIP Services are supported')
     if any(pod.get(k) for k in ['hostNetwork','hostPID','hostIPC','ephemeralContainers']):raise ValueError('Unsupported Pod namespace or container scope')
     if d.get('metadata',{}).get('ownerReferences') or d['spec']['template']['metadata'].get('annotations',{}).get('k8s.v1.cni.cncf.io/networks'):raise ValueError('Owned/network-attached workload requires another path')
@@ -52,6 +55,12 @@ def validate_plan(p,context):
 OWNERSHIP_LABELS={'app.kubernetes.io/instance','app.kubernetes.io/managed-by','argocd.argoproj.io/instance','helm.sh/chart'}
 def ownership_label(key):return key in OWNERSHIP_LABELS or bool(re.match(r'(kustomize|helm|source)\.toolkit\.fluxcd\.io/',key))
 
+def no_tracking_labels(p):
+    # Checked before validate/deploy only: inspect and cleanup must still work for pilots
+    # deployed from plans generated before this check existed.
+    for r in p['preflight']['manifests']['items']:
+        if any(ownership_label(k) for k in r.get('metadata',{}).get('labels',{})):raise ValueError('Inherited Argo CD, Helm or Flux tracking labels require review')
+
 def matches(labels,selector):
     if not isinstance(selector,dict) or not selector:return False
     if not all(labels.get(k)==v for k,v in selector.get('matchLabels',{}).items()):return False
@@ -67,40 +76,59 @@ def matches(labels,selector):
 # Kinds that would route traffic to, or scale, the pilot the moment it exists. Optional
 # APIs are only queried when the cluster serves them.
 CONSUMERS=['ingresses.networking.k8s.io','horizontalpodautoscalers.autoscaling']
-OPTIONAL_CONSUMERS=['httproutes.gateway.networking.k8s.io','grpcroutes.gateway.networking.k8s.io','tlsroutes.gateway.networking.k8s.io','tcproutes.gateway.networking.k8s.io','udproutes.gateway.networking.k8s.io','referencegrants.gateway.networking.k8s.io','scaledobjects.keda.sh','verticalpodautoscalers.autoscaling.k8s.io']
+OPTIONAL_CONSUMERS=['httproutes.gateway.networking.k8s.io','grpcroutes.gateway.networking.k8s.io','tlsroutes.gateway.networking.k8s.io','tcproutes.gateway.networking.k8s.io','udproutes.gateway.networking.k8s.io','referencegrants.gateway.networking.k8s.io','httpproxies.projectcontour.io','scaledobjects.keda.sh','verticalpodautoscalers.autoscaling.k8s.io']
+CONSUMER_GROUPS=['gateway.networking.k8s.io','projectcontour.io','keda.sh','autoscaling.k8s.io']
 ROUTE_KINDS=['HTTPRoute','GRPCRoute','TLSRoute','TCPRoute','UDPRoute']
+CONSUMER_KINDS=['Ingress','HorizontalPodAutoscaler','ReferenceGrant','HTTPProxy','ScaledObject','VerticalPodAutoscaler']+ROUTE_KINDS
 
 def consumers(items,ns,deployment,services):
     """Return reasons why existing target objects would reach or scale the pilot."""
     out=[];svc=set(services)
-    def lst(v):return v if isinstance(v,list) else []
-    for r in items:
-        if not isinstance(r,dict) or r.get('metadata',{}).get('namespace',ns)!=ns:continue
-        kind=r.get('kind');spec=r.get('spec') or {}
+    def obj(v):return v if isinstance(v,dict) else {}
+    def lst(v):return [x for x in v if isinstance(x,dict)] if isinstance(v,list) else []
+    def routed(kind,names):
+        for n in sorted({n for n in names if n in svc}):out.append('Existing target %s routes to pilot Service %s; remove or repoint it first'%(kind,n))
+    def local(b):return b.get('kind','Service')=='Service' and not b.get('group') and b.get('namespace',ns)==ns
+    for r in lst(items):
+        if obj(r.get('metadata')).get('namespace',ns)!=ns:continue
+        kind=r.get('kind');spec=obj(r.get('spec'))
         if kind=='Ingress':
-            refs=[(spec.get('defaultBackend') or {}).get('service',{}).get('name')]+[(x.get('backend') or {}).get('service',{}).get('name') for rule in lst(spec.get('rules')) for x in lst((rule.get('http') or {}).get('paths'))]
-            out+=['Existing target Ingress routes to pilot Service %s; remove or repoint it first'%n for n in sorted({n for n in refs if n in svc})]
+            routed(kind,[obj(obj(spec.get('defaultBackend')).get('service')).get('name')]+[obj(obj(x.get('backend')).get('service')).get('name') for rule in lst(spec.get('rules')) for x in lst(obj(rule.get('http')).get('paths'))])
         elif kind in ROUTE_KINDS:
-            refs=[b.get('name') for rule in lst(spec.get('rules')) for b in lst(rule.get('backendRefs')) if b.get('kind','Service')=='Service' and not b.get('group') and b.get('namespace',ns)==ns]
-            out+=['Existing target %s routes to pilot Service %s; remove or repoint it first'%(kind,n) for n in sorted({n for n in refs if n in svc})]
+            refs=[]
+            for rule in lst(spec.get('rules')):
+                refs+=lst(rule.get('backendRefs'))+[obj(obj(f.get('requestMirror')).get('backendRef')) for f in lst(rule.get('filters'))]
+                refs+=[obj(obj(f.get('requestMirror')).get('backendRef')) for b in lst(rule.get('backendRefs')) for f in lst(b.get('filters'))]
+            routed(kind,[b.get('name') for b in refs if local(b)])
+        elif kind=='HTTPProxy':
+            routed(kind,[x.get('name') for route in lst(spec.get('routes')) for x in lst(route.get('services'))]+[x.get('name') for x in lst(obj(spec.get('tcpproxy')).get('services'))])
         elif kind=='ReferenceGrant':
             if any(not t.get('group') and t.get('kind')=='Service' and (not t.get('name') or t.get('name') in svc) for t in lst(spec.get('to'))):out.append('ReferenceGrant lets routes in other namespaces reach pilot Services; review them first')
         elif kind in ['HorizontalPodAutoscaler','ScaledObject','VerticalPodAutoscaler']:
-            ref=spec.get('targetRef' if kind=='VerticalPodAutoscaler' else 'scaleTargetRef') or {}
+            ref=obj(spec.get('targetRef' if kind=='VerticalPodAutoscaler' else 'scaleTargetRef'))
             if ref.get('kind','Deployment')=='Deployment' and ref.get('name')==deployment:out.append('Existing target %s targets the pilot Deployment and would change its one replica; remove it first'%kind)
     return out
 
-def isolation(p,context,ns):
-    try:served=set(command(context,['api-resources','-o','name']).split())
+def served_resources(context):
+    """Resource names the target serves. kubectl exits 1 with a partial list when an unrelated
+    aggregated API (e.g. metrics) is down; accept that unless a group we must check is affected."""
+    try:return set(command(context,['api-resources','-o','name']).split())
+    except KubectlError as e:
+        if e.stdout.strip() and 'unable to retrieve the complete list of server APIs' in e.stderr and not any(g in e.stderr for g in CONSUMER_GROUPS):return set(e.stdout.split())
+        raise ValueError('Could not list target API resources; isolation cannot be verified')
     except Exception:raise ValueError('Could not list target API resources; isolation cannot be verified')
+
+def isolation(p,context,ns):
+    served=served_resources(context)
     kinds=['services','deployments.apps','replicasets.apps','statefulsets.apps','daemonsets.apps','jobs.batch','cronjobs.batch','pods']+CONSUMERS+[k for k in OPTIONAL_CONSUMERS if k in served]
-    items=json.loads(command(context,['get',','.join(kinds),'--namespace',ns,'-o','json'])).get('items',[])
+    try:items=json.loads(command(context,['get',','.join(kinds),'--namespace',ns,'-o','json'])).get('items',[])
+    except KubectlError:raise ValueError('Could not list %s in namespace %s; check that your user can list them (RBAC), then retry'%(', '.join(kinds),ns))
     manifests=p['preflight']['manifests']['items'];d=next(r for r in manifests if r['kind']=='Deployment');labels=d['spec']['template']['metadata']['labels'];selector=d['spec']['selector']
     reasons=consumers(items,ns,d['metadata']['name'],[r['metadata']['name'] for r in manifests if r['kind']=='Service'])
     if reasons:raise ValueError('; '.join(reasons))
     for r in items:
         if r.get('metadata',{}).get('deletionTimestamp'):raise ValueError('Target namespace has terminating workload/service objects; resolve before isolated pilot')
-        if r.get('kind') in ['Ingress','HorizontalPodAutoscaler','ReferenceGrant','ScaledObject','VerticalPodAutoscaler']+ROUTE_KINDS:continue
+        if r.get('kind') in CONSUMER_KINDS:continue
         if r.get('kind')=='Service':
             if r.get('spec',{}).get('selector') and matches(labels,{'matchLabels':r['spec']['selector']}):raise ValueError('Existing target Service selects the pilot labels; isolate target traffic first')
         else:
@@ -164,6 +192,7 @@ def run(p,context,mode,save,validation=None,confirm='',ack=False):
     d,ns=validate_plan(p,context);run_id=str(uuid.uuid4());report={'schemaVersion':1,'kind':'PilotExecutionResult','binding':p['binding'],'planRevision':p['planRevision'],'workload':p['workload'],'context':context,'clusterUID':p['preflight']['expectedClusterUID'],'runId':run_id,'mode':mode,'status':'Started','observedAt':now(),'preflightPassed':False,'created':[],'uncertain':[],'rollout':{'status':'NotRun'},'smoke':{'status':'NotRun'},'images':[],'error':'','productionReady':False};save(report)
     try:
         if mode not in ['validate','deploy']:raise ValueError('Choose validate or deploy')
+        no_tracking_labels(p)
         if mode=='deploy':
             if not ack or confirm!=p['workload']:raise ValueError('Deploy needs exact --confirm-workload and --ack-prerequisites')
             at=datetime.datetime.fromisoformat(validation.get('observedAt','').replace('Z','+00:00')) if validation else None
