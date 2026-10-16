@@ -17,6 +17,15 @@ Use this when you can't run containers locally, or when the engine must reach cl
    scripts/collector-kubeconfig.sh my-vks-context   target.kubeconfig
    (umask 077; KUBECONFIG=source.kubeconfig:target.kubeconfig kubectl config view --flatten > studio.kubeconfig)
    ```
+   On Windows, use PowerShell. Keep `collector-kubeconfig.ps1` and `deploy\kubernetes\collector-rbac.yaml` in the repository layout (or the YAML next to the script):
+   ```powershell
+   .\scripts\collector-kubeconfig.ps1 -Context my-source-context -Output source.kubeconfig
+   .\scripts\collector-kubeconfig.ps1 -Context my-vks-context -Output target.kubeconfig
+   $env:KUBECONFIG = "source.kubeconfig;target.kubeconfig"
+   kubectl config view --flatten | Set-Content -Encoding ascii studio.kubeconfig
+   Remove-Item Env:KUBECONFIG
+   ```
+   (Use `Set-Content -Encoding ascii`, not `>`: Windows PowerShell's `>` writes UTF-16, which kubectl cannot read.)
    The collector can list exactly the kinds the inventory needs: workloads, networking, storage, RBAC and policy objects. It cannot read Secrets, ConfigMaps or Pods, or change anything. It can read Argo CD Applications and Flux HelmReleases, which may contain Helm values; the engine removes those values before storing anything. Its token does not expire like a `kubectl vsphere login` token, so keep these files private and delete them once the Secret below exists.
 3. **Deploy the engine** to any cluster that can reach those API servers:
    ```bash

@@ -58,6 +58,15 @@ jobs:
           sed 's#image: ghcr.io/avnish80/vks-migration-studio:.*#image: studio:test#; s#imagePullPolicy: IfNotPresent#imagePullPolicy: Never#' deploy/kubernetes/vks-migration-studio.yaml | kubectl apply -f -
           ctx=$(kubectl config current-context)
           scripts/collector-kubeconfig.sh "$ctx" /tmp/collector.kubeconfig
+          # The PowerShell version (for Windows jump hosts) must produce an equivalent, working login.
+          pwsh -NoProfile -File scripts/collector-kubeconfig.ps1 -Context "$ctx" -Output /tmp/collector-ps.kubeconfig
+          test "$(stat -c %a /tmp/collector-ps.kubeconfig)" = 600
+          for f in /tmp/collector.kubeconfig /tmp/collector-ps.kubeconfig; do
+            kubectl --kubeconfig "$f" get deployments -A >/dev/null
+            if kubectl --kubeconfig "$f" get secrets -A >/dev/null 2>&1; then echo "$f can read Secrets"; exit 1; fi
+            if kubectl --kubeconfig "$f" get pods -A >/dev/null 2>&1; then echo "$f can read Pods"; exit 1; fi
+            if kubectl --kubeconfig "$f" -n default create configmap probe --from-literal=a=b >/dev/null 2>&1; then echo "$f can write"; exit 1; fi
+          done
           # Inside the cluster the API server is kubernetes.default.svc, not the host port kind exposes.
           sed -i 's#server: .*#server: https://kubernetes.default.svc#' /tmp/collector.kubeconfig
           kubectl -n vks-migration-studio create secret generic studio-kubeconfig --from-file=config=/tmp/collector.kubeconfig
