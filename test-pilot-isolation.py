@@ -1,4 +1,5 @@
-"""Deploy must refuse when target routes or autoscalers would reach or scale the pilot."""
+"""Deploy must refuse when target routes or autoscalers would reach or scale the pilot,
+and the runner must refuse plans that carry reconciler tracking labels."""
 import copy,importlib.util,json,unittest
 spec=importlib.util.spec_from_file_location('runner_tests','test-pilot-runner.py');base=importlib.util.module_from_spec(spec);spec.loader.exec_module(base)
 r=base.r
@@ -46,4 +47,13 @@ class Isolation(base.Runner):
         self.assertEqual(result['status'],'Failed');self.assertIn('single replica',result['error'])
 for name in [n for n in dir(base.Runner) if n.startswith('test_')]:
     if name not in Isolation.__dict__:setattr(Isolation,name,None)  # run only the isolation cases here
+
+class TrackingLabels(unittest.TestCase):
+    def test_runner_rejects_tracking_labels_in_plan(self):
+        for key in ['app.kubernetes.io/instance','kustomize.toolkit.fluxcd.io/name']:
+            p=copy.deepcopy(base.FIXTURE);p['preflight']['manifests']['items'][1]['metadata'].setdefault('labels',{})[key]='x'
+            p['binding']=json.dumps({k:p[k] for k in ['planRevision','workload','settings','preflight','blockers','prerequisites']})
+            with self.assertRaisesRegex(ValueError,'tracking labels'):r.validate_plan(p,'target')
+        r.validate_plan(copy.deepcopy(base.FIXTURE),'target')
+
 if __name__=='__main__':unittest.main()

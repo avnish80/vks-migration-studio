@@ -32,6 +32,7 @@ def validate_plan(p,context):
         seen.add(key);name(meta.get('name'))
         for m in [meta,r.get('spec',{}).get('template',{}).get('metadata',{})]:
             if any(re.search(r'argocd|helm\.sh|fluxcd|external-dns',k,re.I) for k in m.get('annotations',{})):raise ValueError('Inherited reconciliation/external DNS annotations require review')
+        if any(ownership_label(k) for k in meta.get('labels',{})):raise ValueError('Inherited Argo CD, Helm or Flux tracking labels require review')
         if kind=='Service' and (r.get('apiVersion')!='v1' or r['spec'].get('type','ClusterIP')!='ClusterIP' or any(r['spec'].get(k) for k in ['externalIPs','loadBalancerIP','loadBalancerClass','externalName']) or not r['spec'].get('selector') or not matches(labels,{'matchLabels':r['spec']['selector']}) or any(x.get('nodePort') for x in r['spec'].get('ports',[]))):raise ValueError('Only isolated ClusterIP Services are supported')
     if any(pod.get(k) for k in ['hostNetwork','hostPID','hostIPC','ephemeralContainers']):raise ValueError('Unsupported Pod namespace or container scope')
     if d.get('metadata',{}).get('ownerReferences') or d['spec']['template']['metadata'].get('annotations',{}).get('k8s.v1.cni.cncf.io/networks'):raise ValueError('Owned/network-attached workload requires another path')
@@ -47,6 +48,9 @@ def validate_plan(p,context):
     path=s.get('smokePath','');marker=s.get('smokeMarker','')
     if not isinstance(path,str) or len(path)>500 or not path.startswith('/') or path.startswith('//') or any(x in path for x in ['\r','\n','\x00']) or not isinstance(marker,str) or len(marker)>200:raise ValueError('Invalid smoke settings')
     return d,ns
+
+OWNERSHIP_LABELS={'app.kubernetes.io/instance','app.kubernetes.io/managed-by','argocd.argoproj.io/instance','helm.sh/chart'}
+def ownership_label(key):return key in OWNERSHIP_LABELS or bool(re.match(r'(kustomize|helm|source)\.toolkit\.fluxcd\.io/',key))
 
 def matches(labels,selector):
     if not isinstance(selector,dict) or not selector:return False

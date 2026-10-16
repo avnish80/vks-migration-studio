@@ -50,5 +50,9 @@ for(const img of images.values())if(!img.image.includes('@sha256:'))add(null,'Re
 const known=new Set(resources.map(id));for(const e of edges)if(!e.to.startsWith('image:')&&!e.to.startsWith('external:')&&!e.to.startsWith('storageclass:')&&!known.has(e.to))add(null,'Unknown','Dependencies','Referenced resource absent from inventory',`${e.from} → ${e.to}`,'Collect the missing resource or verify whether it exists out of scope.');
 return {schemaVersion:1,generatedAt:new Date().toISOString(),sourceVersion:inv.sourceVersion,target,resources,workloads:workloads.map(id),images:[...images.values()],findings,edges,coverage:inv.collection,productionReady:false};
 }
-root.MigrationEngine={analyze,normalize,sanitize,id,pod};if(typeof module!=='undefined')module.exports=root.MigrationEngine;
+// Labels GitOps and Helm reconcilers use to claim ownership of a top-level object.
+// app.kubernetes.io/instance is Argo CD's default tracking label (label tracking mode).
+const OWNERSHIP_LABELS=['app.kubernetes.io/instance','app.kubernetes.io/managed-by','argocd.argoproj.io/instance','helm.sh/chart'];
+function ownershipLabel(key){return OWNERSHIP_LABELS.includes(key)||/^(kustomize|helm|source)\.toolkit\.fluxcd\.io\//.test(key);}
+root.MigrationEngine={analyze,normalize,sanitize,id,pod,ownershipLabel};if(typeof module!=='undefined')module.exports=root.MigrationEngine;
 })(typeof window!=='undefined'?window:globalThis);
