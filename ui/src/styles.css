@@ -92,6 +92,27 @@ h1 { font-size: 24px; font-weight: 400; margin: 0; }
 h3 { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
 
 /* Components */
+fieldset.row { border: 1px solid var(--border-soft); border-radius: var(--radius); margin: 16px 0 0; padding: 4px 12px 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0 12px; }
+fieldset.row legend { font-size: 13px; font-weight: 500; padding: 0 4px; }
+label.check { display: flex; gap: 8px; align-items: flex-start; font-weight: 400; margin: 12px 0; }
+label.check input { width: auto; margin-top: 3px; }
+pre.code { background: var(--nav-bg); padding: 12px; border-radius: var(--radius); overflow: auto; max-height: 360px; font-size: 12px; }
+ol.steps { list-style: none; padding: 0; margin: 0; border-left: 2px solid var(--border-soft); }
+ol.steps li { position: relative; padding: 4px 0 14px 18px; }
+ol.steps li::before { content: ''; position: absolute; left: -7px; top: 9px; width: 12px; height: 12px; border-radius: 50%; background: var(--success); }
+ol.steps li.bad::before { background: var(--danger); }
+ol.steps p { margin: 4px 0; }
+.badge.large { font-size: 13px; padding: 4px 12px; }
+.badge.run-PilotPassed, .badge.run-Cleaned, .badge.run-Absent, .badge.run-Validated, .badge.run-Inspected { border-color: var(--success); color: var(--success); }
+.badge.run-NeedsRecovery, .badge.run-NeedsReview, .badge.run-ValidationFailed, .badge.run-NothingCreated { border-color: var(--danger); color: var(--danger); background: var(--danger-bg); }
+.badge.state-Planned, .badge.state-Piloting { border-color: var(--action); color: var(--action); }
+.badge.state-PilotPassed { border-color: var(--success); color: var(--success); background: var(--info-bg); }
+.badge.state-PilotFailed { border-color: var(--danger); color: var(--danger); }
+.mono-title { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 20px; word-break: break-all; }
+.card.confirm { border-color: var(--warn-border); }
+.pilot-login { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.pilot-login select { width: auto; min-width: 160px; }
+section.pilot { border-top: 1px solid var(--border-soft); margin-top: 16px; padding-top: 4px; }
 select { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--fg); font: 14px var(--font); max-width: 520px; width: 100%; }
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
 .grid2 .card { margin-bottom: 0; }

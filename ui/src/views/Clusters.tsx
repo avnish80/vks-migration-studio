@@ -42,13 +42,14 @@ export function Clusters() {
       {clusters && clusters.length === 0 && <div className="card empty"><p>No clusters registered yet. Pick a context below.</p></div>}
       {clusters && clusters.length > 0 && (
         <table className="spaced">
-          <thead><tr><th>Cluster</th><th>Role</th><th>Identity</th><th>Status</th><th /></tr></thead>
+          <thead><tr><th>Cluster</th><th>Role</th><th>Identity</th><th>Status</th><th>Pilot login</th><th /></tr></thead>
           <tbody>{clusters.map(c => (
             <tr key={c.id}>
               <td>{c.name}<div className="hint mono">{c.contextName}</div></td>
               <td><span className={`badge ${c.role}`}>{c.role}</span></td>
               <td className="mono" title="kube-system namespace UID">{c.clusterUid?.slice(0, 8)}…</td>
               <td>{c.lastError ? <span className="text-danger">{c.lastError}</span> : c.lastSeenAt ? `Reachable · checked ${new Date(c.lastSeenAt).toLocaleString()}` : 'Not checked'}</td>
+              <td>{c.role === 'target' ? <PilotLogin cluster={c} contexts={(contexts ?? []).filter(x => !x.registered || x.name === c.pilotContextName).map(x => x.name)} onSaved={load} /> : <span className="hint">—</span>}</td>
               <td className="row-actions">
                 <button className="btn outline small" disabled={busy === c.id} onClick={() => void check(c)}>{busy === c.id ? 'Checking…' : 'Check'}</button>
                 <button className="link" onClick={() => void remove(c)}>Remove</button>
@@ -86,5 +87,28 @@ export function Clusters() {
         </table>
       )}
     </>
+  );
+}
+
+/** The write-capable context used for pilots on a target cluster; must reach the same cluster. */
+function PilotLogin({ cluster, contexts, onSaved }: { cluster: Cluster; contexts: string[]; onSaved: () => void }) {
+  const [value, setValue] = useState(cluster.pilotContextName ?? '');
+  const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    setBusy(true); setError(undefined);
+    try { await api(`/api/clusters/${cluster.id}/pilot-context`, { method: 'PUT', body: JSON.stringify({ contextName: value || null }) }); onSaved(); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Could not set the pilot login.'); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="pilot-login">
+      <select aria-label={`Pilot login for ${cluster.name}`} value={value} onChange={e => setValue(e.target.value)}>
+        <option value="">None</option>
+        {contexts.map(n => <option key={n} value={n}>{n}</option>)}
+      </select>
+      {value !== (cluster.pilotContextName ?? '') && <button className="btn outline small" disabled={busy} onClick={() => void save()}>{busy ? 'Checking…' : 'Save'}</button>}
+      {error && <div className="text-danger" role="alert">{error}</div>}
+    </div>
   );
 }

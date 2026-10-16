@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react';
 import { api, ApiError, captureTokenFromUrl, clearToken, getToken, setToken, type Version } from './api';
 import { hasUnsaved, navigate, useLocation, type Route } from './router';
 import { Clusters } from './views/Clusters';
+import { Runs } from './views/Runs';
 import { Estate } from './views/Estate';
 import { Audit } from './views/Audit';
-import { Placeholder } from './views/Placeholder';
 
 type Session = { state: 'checking' } | { state: 'signin'; message?: string } | { state: 'ready'; version: string };
 
@@ -49,7 +49,7 @@ function SignIn({ message, onSubmit }: { message?: string; onSubmit: (token: str
 }
 
 const NAV: { group: string; items: { to: Route; label: string; soon?: string }[] }[] = [
-  { group: 'Migrate', items: [{ to: '/estate', label: 'Estate' }, { to: '/runs', label: 'Pilot runs', soon: '1.2' }] },
+  { group: 'Migrate', items: [{ to: '/estate', label: 'Estate' }, { to: '/runs', label: 'Pilot runs' }] },
   { group: 'Platform', items: [{ to: '/clusters', label: 'Clusters' }, { to: '/audit', label: 'Audit log' }] },
 ];
 
@@ -81,7 +81,7 @@ function Shell({ version, onSignOut }: { version: string; onSignOut: () => void 
           {route === '/estate' && <Estate projectId={params.get('project')} />}
           {route === '/audit' && <Audit />}
           {route === '/clusters' && <Clusters />}
-          {route === '/runs' && <Placeholder title="Pilot runs" lede="Validate, deploy, observe, inspect and clean up a single-workload pilot." milestone="1.2" body="Runs will execute as engine jobs with evidence recorded directly — no receipt files to import. One unresolved run per workload is enforced." />}
+          {route === '/runs' && <Runs runId={params.get('run')} />}
         </main>
       </div>
     </div>

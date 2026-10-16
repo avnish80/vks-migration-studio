@@ -44,7 +44,14 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 export interface Project { id: string; name: string; description: string; sourceClusterId: string | null; targetClusterId: string | null; createdAt: string; updatedAt: string }
 export type Side = 'source' | 'target';
 export interface KubeContext { name: string; cluster: string; server: string; namespace: string; current: boolean; registered: boolean }
-export interface Cluster { id: string; contextName: string; name: string; role: Side; clusterUid: string | null; lastSeenAt: string | null; lastError: string | null; createdAt: string }
+export interface Cluster { id: string; contextName: string; name: string; role: Side; clusterUid: string | null; pilotContextName: string | null; lastSeenAt: string | null; lastError: string | null; createdAt: string }
+export interface Prerequisite { resource: string; action: string; status: string }
+export interface Plan { id: string; workloadId: string; workload: string; revision: string; createdAt: string; blockers: { resource: string; reason: string }[]; prerequisites: Prerequisite[]; settings: Record<string, unknown>; manifests: { items: unknown[] } }
+export interface PilotInfo { workload: string; state: string; containers: { name: string; image: string; init: boolean }[]; plan: Plan | null; planInputs: { images?: Record<string, string>; serviceAccount?: string; settings?: Record<string, unknown> } | null; runs: { id: string; state: string; createdAt: string }[]; target: { name: string; pilotContext: string | null } | null }
+export type RunAction = 'validate' | 'deploy' | 'observe' | 'inspect' | 'cleanup' | 'discard';
+export interface RunStep { id: string; step: string; status: string; observedAt: string; summary: Record<string, unknown> }
+export interface Run { id: string; runLabel: string; projectId: string; workloadId: string; workload: string; planId: string; revision: string; context: string; state: string; detail: string | null; actions: RunAction[]; closed: boolean; createdAt: string; updatedAt: string; steps: RunStep[]; job: { id: string; state: string; progress: string | null } | null }
+export interface RunListItem { id: string; state: string; detail: string | null; workload: string; workloadId: string; projectId: string; projectName: string; createdAt: string; updatedAt: string }
 export interface Job { id: string; type: string; projectId: string | null; state: 'Queued' | 'Running' | 'Succeeded' | 'Failed'; attempts: number; progress: string | null; result: unknown; error: string | null; createdAt: string; updatedAt: string }
 export interface Workload { id: string; resource: string; kind: string; namespace: string; name: string; state: string; blockers: number; reviews: number; updatedAt: string }
 export interface WorkloadList { snapshotId: string | null; findingsBySeverity: Record<string, number>; estateFindings: number; items: Workload[] }
