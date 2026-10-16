@@ -240,6 +240,14 @@ Some users cannot install Docker or npm on their workstation. Two supported path
 - **GitHub Codespaces** for trying the UI (`.devcontainer`), with demo or imported inventories.
 - **A single-replica Deployment on a VKS cluster** (`deploy/kubernetes/`), reached with `kubectl port-forward`. The engine reads clusters through a kubeconfig Secret, normally built from read-only collector service accounts (`scripts/collector-kubeconfig.sh`). This brings part of phase 2's in-cluster mode forward; the Helm chart, OIDC and multiple users stay in phase 2. Pilot runs in 1.2 will need a separate, scoped write identity for the target namespace.
 
+### Milestone 1.2 as built (added 16 Oct 2026)
+
+- **Pilot login.** A target cluster can have a second context, bound only if it reaches the same cluster (kube-system UID). `scripts/pilot-kubeconfig.sh` creates it: create/patch/delete on Deployments and Services in one namespace, read-only access for the checks, and cluster-wide only `get namespaces` and `list nodes`.
+- **Plans.** Built with the reused execution module from the project's latest source and target snapshots. The revision is a SHA-256 of exactly the plan's inputs (workload, both snapshot hashes, pilot context, target UID, images, service account, smoke settings).
+- **Runs.** Each step runs `dist/pilot-runner.py` as an engine job and stores its receipt as evidence. States: Validating → Validated → Deploying → PilotPassed / NeedsRecovery / NothingCreated → Inspecting → Inspected → Cleaning → Cleaned / CleanupPending / Absent, plus NeedsReview and Discarded. One unresolved run per workload is enforced by a partial unique index. Pilot steps are never retried automatically; after a restart, an interrupted step leaves the run in NeedsReview and inspection can use the runner's partial deploy receipt from the run folder.
+- **Confirmations.** Deploy needs the workload name typed and a validation from the last 25 minutes; clean-up needs the run ID on the target objects typed, an external-state acknowledgement and an inspection from the last 9 minutes. The runner enforces its own, slightly longer limits as well.
+- **CI.** Every pull request runs a full pilot between two kind clusters through the API.
+
 ## 8. Decisions
 
 **Settled (16 Oct 2026)**

@@ -31,6 +31,13 @@ Use this when you can't run containers locally, or when the engine must reach cl
    kubectl -n vks-migration-studio exec deploy/vks-migration-studio -- cat /data/token
    ```
    Open http://127.0.0.1:8080 and paste the token. Then go to **Clusters**, add your source and VKS target, create a project and collect.
+5. **Run a pilot (optional).** A pilot deploys one replica of a Deployment, with its ClusterIP Services, into the same namespace on the target, runs an HTTP smoke test against it, and later deletes exactly what it created. It needs a second, write-capable login for the target, limited to that namespace (which must already exist):
+   ```bash
+   scripts/pilot-kubeconfig.sh my-vks-context payments target-pilot.kubeconfig        # Windows: .\scripts\pilot-kubeconfig.ps1 -Context my-vks-context -Namespace payments
+   (umask 077; KUBECONFIG=source.kubeconfig:target.kubeconfig:target-pilot.kubeconfig kubectl config view --flatten > studio.kubeconfig)
+   kubectl -n vks-migration-studio create secret generic studio-kubeconfig --from-file=config=studio.kubeconfig --dry-run=client -o yaml | kubectl apply -f -
+   ```
+   On **Clusters**, choose `my-vks-context-pilot` as the target's pilot login. Collect the target inventory, then open a workload on the project page and **Plan a pilot**: give digest-pinned images and the smoke test, confirm the prerequisites, and follow the run page (validate → deploy → observe → inspect → clean up). The engine must be able to port-forward to the pilot Pod for the smoke test.
 
 ## Try it in your browser (GitHub Codespaces)
 
