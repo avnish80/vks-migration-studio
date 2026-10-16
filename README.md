@@ -37,6 +37,12 @@ Use this when you can't run containers locally, or when the engine must reach cl
    (umask 077; KUBECONFIG=source.kubeconfig:target.kubeconfig:target-pilot.kubeconfig kubectl config view --flatten > studio.kubeconfig)
    kubectl -n vks-migration-studio create secret generic studio-kubeconfig --from-file=config=studio.kubeconfig --dry-run=client -o yaml | kubectl apply -f -
    ```
+   On Windows, merge with PowerShell instead of the `umask` line:
+   ```powershell
+   $env:KUBECONFIG = "source.kubeconfig;target.kubeconfig;target-pilot.kubeconfig"
+   kubectl config view --flatten | Set-Content -Encoding ascii studio.kubeconfig
+   Remove-Item Env:KUBECONFIG
+   ```
    On **Clusters**, choose `my-vks-context-pilot-payments` as the target's pilot login (the engine refuses the inventory login and any login that can write in every namespace). Each namespace gets its own login; the token does not expire, so revoke it when you are done (commands at the top of `deploy/kubernetes/pilot-rbac.yaml`). Within that namespace the login can change any Deployment or Service, so pilot in a namespace without production traffic. Collect the target inventory, then open a workload on the project page and **Plan a pilot**: give digest-pinned images and the smoke test, confirm the prerequisites, and follow the run page (validate → deploy → observe → inspect → clean up). The engine must be able to port-forward to the pilot Pod for the smoke test.
 
 ## Try it in your browser (GitHub Codespaces)
