@@ -60,11 +60,43 @@ def matches(labels,selector):
         if op not in ['In','NotIn','Exists','DoesNotExist']:raise ValueError('Unsupported label selector operator')
     return bool(selector.get('matchLabels') or selector.get('matchExpressions'))
 
+# Kinds that would route traffic to, or scale, the pilot the moment it exists. Optional
+# APIs are only queried when the cluster serves them.
+CONSUMERS=['ingresses.networking.k8s.io','horizontalpodautoscalers.autoscaling']
+OPTIONAL_CONSUMERS=['httproutes.gateway.networking.k8s.io','grpcroutes.gateway.networking.k8s.io','tlsroutes.gateway.networking.k8s.io','tcproutes.gateway.networking.k8s.io','udproutes.gateway.networking.k8s.io','referencegrants.gateway.networking.k8s.io','scaledobjects.keda.sh','verticalpodautoscalers.autoscaling.k8s.io']
+ROUTE_KINDS=['HTTPRoute','GRPCRoute','TLSRoute','TCPRoute','UDPRoute']
+
+def consumers(items,ns,deployment,services):
+    """Return reasons why existing target objects would reach or scale the pilot."""
+    out=[];svc=set(services)
+    def lst(v):return v if isinstance(v,list) else []
+    for r in items:
+        if not isinstance(r,dict) or r.get('metadata',{}).get('namespace',ns)!=ns:continue
+        kind=r.get('kind');spec=r.get('spec') or {}
+        if kind=='Ingress':
+            refs=[(spec.get('defaultBackend') or {}).get('service',{}).get('name')]+[(x.get('backend') or {}).get('service',{}).get('name') for rule in lst(spec.get('rules')) for x in lst((rule.get('http') or {}).get('paths'))]
+            out+=['Existing target Ingress routes to pilot Service %s; remove or repoint it first'%n for n in sorted({n for n in refs if n in svc})]
+        elif kind in ROUTE_KINDS:
+            refs=[b.get('name') for rule in lst(spec.get('rules')) for b in lst(rule.get('backendRefs')) if b.get('kind','Service')=='Service' and not b.get('group') and b.get('namespace',ns)==ns]
+            out+=['Existing target %s routes to pilot Service %s; remove or repoint it first'%(kind,n) for n in sorted({n for n in refs if n in svc})]
+        elif kind=='ReferenceGrant':
+            if any(not t.get('group') and t.get('kind')=='Service' and (not t.get('name') or t.get('name') in svc) for t in lst(spec.get('to'))):out.append('ReferenceGrant lets routes in other namespaces reach pilot Services; review them first')
+        elif kind in ['HorizontalPodAutoscaler','ScaledObject','VerticalPodAutoscaler']:
+            ref=spec.get('targetRef' if kind=='VerticalPodAutoscaler' else 'scaleTargetRef') or {}
+            if ref.get('kind','Deployment')=='Deployment' and ref.get('name')==deployment:out.append('Existing target %s targets the pilot Deployment and would change its one replica; remove it first'%kind)
+    return out
+
 def isolation(p,context,ns):
-    items=json.loads(command(context,['get','services,deployments.apps,replicasets.apps,statefulsets.apps,daemonsets.apps,jobs.batch,cronjobs.batch,pods','--namespace',ns,'-o','json'])).get('items',[])
-    d=next(r for r in p['preflight']['manifests']['items'] if r['kind']=='Deployment');labels=d['spec']['template']['metadata']['labels'];selector=d['spec']['selector']
+    try:served=set(command(context,['api-resources','-o','name']).split())
+    except Exception:raise ValueError('Could not list target API resources; isolation cannot be verified')
+    kinds=['services','deployments.apps','replicasets.apps','statefulsets.apps','daemonsets.apps','jobs.batch','cronjobs.batch','pods']+CONSUMERS+[k for k in OPTIONAL_CONSUMERS if k in served]
+    items=json.loads(command(context,['get',','.join(kinds),'--namespace',ns,'-o','json'])).get('items',[])
+    manifests=p['preflight']['manifests']['items'];d=next(r for r in manifests if r['kind']=='Deployment');labels=d['spec']['template']['metadata']['labels'];selector=d['spec']['selector']
+    reasons=consumers(items,ns,d['metadata']['name'],[r['metadata']['name'] for r in manifests if r['kind']=='Service'])
+    if reasons:raise ValueError('; '.join(reasons))
     for r in items:
         if r.get('metadata',{}).get('deletionTimestamp'):raise ValueError('Target namespace has terminating workload/service objects; resolve before isolated pilot')
+        if r.get('kind') in ['Ingress','HorizontalPodAutoscaler','ReferenceGrant','ScaledObject','VerticalPodAutoscaler']+ROUTE_KINDS:continue
         if r.get('kind')=='Service':
             if r.get('spec',{}).get('selector') and matches(labels,{'matchLabels':r['spec']['selector']}):raise ValueError('Existing target Service selects the pilot labels; isolate target traffic first')
         else:
@@ -84,6 +116,7 @@ def live_checks(p,context,ns):
 def runtime_observations(p,context,ns,run_id,deployment_uid):
     d=next(r for r in p['preflight']['manifests']['items'] if r['kind']=='Deployment');obj=json.loads(command(context,['get','deployments.apps',d['metadata']['name'],'--namespace',ns,'-o','json']))
     if obj['metadata']['uid']!=deployment_uid or obj['metadata'].get('labels',{}).get(LABEL)!=run_id:raise ValueError('Created Deployment identity changed; stop pilot observations')
+    if obj.get('spec',{}).get('replicas')!=1:raise ValueError('Live Deployment no longer has the approved single replica; an autoscaler or manual change has altered the pilot')
     replicas=json.loads(command(context,['get','replicasets.apps','--namespace',ns,'-l',LABEL+'='+run_id,'-o','json'])).get('items',[]);owners={r['metadata']['uid'] for r in replicas if any(o.get('uid')==deployment_uid and o.get('controller') for o in r['metadata'].get('ownerReferences',[]))}
     pods=json.loads(command(context,['get','pods','--namespace',ns,'-l',LABEL+'='+run_id,'-o','json'])).get('items',[]);owned=[r for r in pods if r['metadata'].get('labels',{}).get(LABEL)==run_id and not r['metadata'].get('deletionTimestamp') and any(o.get('uid') in owners and o.get('controller') for o in r['metadata'].get('ownerReferences',[]))]
     if not owned:raise ValueError('No current owned pilot Pod observed')

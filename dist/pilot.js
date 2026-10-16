@@ -68,11 +68,24 @@ function generate(raw,options={}){
  }
  for(const r of items.filter(sameNS))if(['Ingress','HTTPRoute','Gateway','HorizontalPodAutoscaler','PodDisruptionBudget','NetworkPolicy'].includes(r.kind)){omitted.push(E.id(r));need(E.id(r),'Review and provision separately. This generator exports only the selected Deployment and isolated ClusterIP Services; routing, policy, disruption and scaling behavior remain unverified.');}
  if(!services.length)need('Service discovery','No matching Service observed. Confirm whether one is required.');
- if(target){for(const r of manifests.items)if(target.items.some(t=>E.id(t)===E.id(r)))block('Same-named destination object exists. Resolve ownership and merge intent before pilot validation.',E.id(r));const apis=target.collection?.apiVersions;if(target.collection?.apiDiscoveryComplete===true)for(const api of new Set(manifests.items.map(r=>r.apiVersion)))if(!apis?.includes(api))block('Destination API discovery does not advertise '+api);}
+ if(target){for(const r of manifests.items)if(target.items.some(t=>E.id(t)===E.id(r)))block('Same-named destination object exists. Resolve ownership and merge intent before pilot validation.',E.id(r));for(const c of targetConsumers(target,ns,d.metadata.name,manifests.items.filter(r=>r.kind==='Service').map(r=>r.metadata.name)))block(c.reason,c.resource);const apis=target.collection?.apiVersions;if(target.collection?.apiDiscoveryComplete===true)for(const api of new Set(manifests.items.map(r=>r.apiVersion)))if(!apis?.includes(api))block('Destination API discovery does not advertise '+api);}
  else need('Target inventory','Import destination evidence and review names, API availability, controllers and prerequisites.');
  return finish();
  function finish(){return {schemaVersion:1,generatedAt:new Date().toISOString(),workload:options.workload||'',status:blockers.length?'Blocked draft':'Draft — prerequisites unverified',productionReady:false,manifests,changes,blockers,prerequisites,omitted:[...new Set(omitted)],notes:'No cluster changes, image copies, credential transfers or tests have occurred. Sanitized inventory cannot replace the complete desired-state repository.'};}
 }
+function targetConsumers(target,ns,deployment,services){
+ // Existing target objects that would send traffic to, or scale, the pilot as soon as it is created.
+ const out=[],inNS=r=>(r.metadata?.namespace||'default')===ns,svc=new Set(services),list=v=>Array.isArray(v)?v:[];
+ for(const r of target.items.filter(inNS)){
+  const id=E.id(r),spec=r.spec||{};
+  if(r.kind==='Ingress'){const refs=[spec.defaultBackend?.service?.name,...list(spec.rules).flatMap(x=>list(x.http?.paths).map(p=>p.backend?.service?.name))];for(const n of new Set(refs.filter(n=>svc.has(n))))out.push({resource:id,reason:`Existing target Ingress routes to Service ${n}; the pilot Service would receive traffic as soon as it is created. Remove or repoint the route first.`});}
+  if(['HTTPRoute','GRPCRoute','TLSRoute','TCPRoute','UDPRoute'].includes(r.kind)){const refs=list(spec.rules).flatMap(x=>list(x.backendRefs)).filter(b=>(b.kind||'Service')==='Service'&&!b.group&&(b.namespace||ns)===ns).map(b=>b.name);for(const n of new Set(refs.filter(n=>svc.has(n))))out.push({resource:id,reason:`Existing target ${r.kind} routes to Service ${n}; the pilot Service would receive traffic as soon as it is created. Remove or repoint the route first.`});}
+  if(r.kind==='ReferenceGrant'&&list(spec.to).some(t=>!t.group&&t.kind==='Service'&&(!t.name||svc.has(t.name))))out.push({resource:id,reason:'ReferenceGrant allows routes in other namespaces to reach pilot Services. Review cross-namespace routes first.'});
+  const ref=r.kind==='HorizontalPodAutoscaler'||r.kind==='ScaledObject'?spec.scaleTargetRef:r.kind==='VerticalPodAutoscaler'?spec.targetRef:null;
+  if(ref&&(ref.kind||'Deployment')==='Deployment'&&ref.name===deployment)out.push({resource:id,reason:`Existing target ${r.kind} targets Deployment ${deployment}; it would change the one-replica pilot. Remove it before the pilot.`});
+ }
+ return out;
+}
 function validationScript(bundle){return '#!/usr/bin/env bash\nset -euo pipefail\n# Review pilot-review.json and provision every prerequisite first.\n# This script never applies persistent changes or switches your current context.\n'+(bundle.blockers.length?"printf '%s\\n' 'STOP: draft has blockers. Resolve them and regenerate.' >&2\nexit 2\n":'if [ "$#" -ne 1 ]; then printf \'%s\\n\' \'Usage: bash validate-pilot.sh TARGET_CONTEXT\' >&2; exit 2; fi\nctx="$1"\nkubectl --context "$ctx" apply --dry-run=server -f pilot-draft.json\nset +e\nkubectl --context "$ctx" diff -f pilot-draft.json\nrc=$?\nset -e\nif [ "$rc" -gt 1 ]; then exit "$rc"; fi\nprintf \'%s\\n\' \'Dry-run/diff completed. Diff exit 1 means differences. No deployment performed. Application and security tests still required.\'\n');}
-root.MigrationPilot={candidates,generate,validationScript};if(typeof module!=='undefined')module.exports=root.MigrationPilot;
+root.MigrationPilot={candidates,generate,validationScript,targetConsumers};if(typeof module!=='undefined')module.exports=root.MigrationPilot;
 })(typeof window!=='undefined'?window:globalThis);
