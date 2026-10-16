@@ -6,6 +6,32 @@ Migration Studio analyses a source cluster inventory, compares it with a VKS tar
 
 > **Status: pre-release.** The automated suites use mocked cluster interfaces. Live VKS integration testing is still pending, and the production gate is permanently closed. Do not use this for production migrations.
 
+## Run it on a VKS cluster
+
+Use this when you can't run containers locally, or when the engine must reach clusters on your network. You need `kubectl` with admin access to the clusters involved.
+
+1. **Publish the image (once per release).** On GitHub, **Releases** → **Draft a new release** → tag `v1.1.0-alpha.1` on `main` → **Publish**. CI builds and signs `ghcr.io/avnish80/vks-migration-studio:1.1.0-alpha.1`. The first time, make the package public: **Packages** → **vks-migration-studio** → **Package settings** → **Change visibility**. If your cluster can't pull from `ghcr.io`, copy the image into your Harbor and change `image:` in the manifest.
+2. **Create a read-only collector login for each cluster to read** (source and target):
+   ```bash
+   scripts/collector-kubeconfig.sh my-source-context source.kubeconfig
+   scripts/collector-kubeconfig.sh my-vks-context   target.kubeconfig
+   KUBECONFIG=source.kubeconfig:target.kubeconfig kubectl config view --flatten > studio.kubeconfig
+   ```
+   The collector can list workloads, networking, storage, RBAC and policy objects. It cannot read Secrets or ConfigMaps or change anything. Its token does not expire like a `kubectl vsphere login` token, so keep the file private.
+3. **Deploy the engine** to any cluster that can reach those API servers:
+   ```bash
+   kubectl apply -f deploy/kubernetes/vks-migration-studio.yaml
+   kubectl -n vks-migration-studio create secret generic studio-kubeconfig --from-file=config=studio.kubeconfig
+   kubectl -n vks-migration-studio rollout restart deploy/vks-migration-studio
+   ```
+   It runs as one replica under the `restricted` pod security standard, with a 2 GiB volume for its database. Set `storageClassName` in the manifest if the cluster has no default storage class.
+4. **Open it:**
+   ```bash
+   kubectl -n vks-migration-studio port-forward svc/vks-migration-studio 8080:8080
+   kubectl -n vks-migration-studio logs deploy/vks-migration-studio | grep token=
+   ```
+   Open the printed link. Then go to **Clusters**, add your source and VKS target, create a project and collect.
+
 ## Try it in your browser (GitHub Codespaces)
 
 No local installs needed: everything runs in a cloud VM on your GitHub account.
@@ -14,7 +40,7 @@ No local installs needed: everything runs in a cloud VM on your GitHub account.
 2. Wait for the first set-up to finish (a few minutes). A terminal then builds and starts the engine and prints a sign-in link ending in `app.github.dev/?token=…`.
 3. Open that link. The address is private to your GitHub account.
 
-Your projects are kept in `.studio-data/` inside the Codespace and survive stopping and restarting it. Stop the Codespace when you're done so it doesn't use your monthly hours. A Codespace cannot reach clusters in your own network, so it is for trying the UI; from milestone 1.1, run the engine where it can reach your clusters.
+Your projects are kept in `.studio-data/` inside the Codespace and survive stopping and restarting it. Stop the Codespace when you're done so it doesn't use your monthly hours. A Codespace cannot reach clusters in your own network: use **Load demo inventory** or **Import file** on a project there, or run the engine on a VKS cluster as above.
 
 To restart the engine yourself in the Codespace terminal: `bash scripts/codespace-start.sh`.
 
@@ -38,7 +64,7 @@ The engine runs as user 10001. Use a named volume for `/data` as shown; if you b
 
 On first start the engine prints a sign-in link containing an access token. The token is also kept in the data volume (`/data/token`). The engine only answers on `127.0.0.1`; to reach it under another host name, set `STUDIO_ALLOWED_HOSTS`.
 
-Milestone 1.0 provides the engine, its store, sign-in, projects and the audit log. Cluster registration (1.1) and engine-run pilots (1.2) follow; see [the phase 1 design](docs/design/phase-1-engine.md).
+Milestone 1.1 adds cluster registration, inventory collection as engine jobs, snapshot comparison and the workload estate with findings. Engine-run pilots (1.2) follow; see [the phase 1 design](docs/design/phase-1-engine.md).
 
 ### Develop
 
