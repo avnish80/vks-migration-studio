@@ -1,0 +1,17 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),E=require('./dist/engine.js');
+const demo=JSON.parse(fs.readFileSync('./dist/demo.json'));
+const r=E.analyze(demo,{kubernetes:'1.33',cni:'Antrea'});
+assert(r.findings.some(f=>f.category==='Identity'&&f.severity==='Blocker'));
+assert(r.findings.some(f=>f.category==='Network'&&f.severity==='Blocker'));
+assert(r.edges.some(e=>e.from==='payments/Ingress/payment-api'&&e.to==='payments/Service/payment-api'));
+assert(r.edges.some(e=>e.from==='payments/Service/payment-api'&&e.to==='payments/Deployment/payment-api'));
+assert(r.edges.some(e=>e.to==='payments/PersistentVolumeClaim/postgres-data'));
+assert.equal(r.images.length,4);assert.equal(r.productionReady,false);
+const old={kind:'List',items:[{kind:'Ingress',apiVersion:'networking.k8s.io/v1beta1',metadata:{name:'old'}}]};
+assert(E.analyze(old,{kubernetes:'1.22'}).findings.some(f=>f.category==='APIs'&&f.severity==='Blocker'));
+assert(!E.analyze(old,{kubernetes:'1.21'}).findings.some(f=>f.category==='APIs'&&f.severity==='Blocker'));
+const sensitive={items:[{kind:'Secret',metadata:{name:'private'},data:{password:'SENSITIVE'},stringData:{token:'SENSITIVE'}},{kind:'Deployment',metadata:{name:'a'},spec:{template:{spec:{containers:[{name:'a',image:'x',env:[{name:'TOKEN',value:'SENSITIVE'}]}]}}}}]};
+assert(!JSON.stringify(E.analyze(sensitive,{})).includes('SENSITIVE'));
+assert.throws(()=>E.normalize({items:[{kind:'Pod'}]}));
+assert(E.analyze({items:[]},{}).findings.some(f=>f.category==='Discovery'));
+console.log('Assessment tests passed: API boundaries, dependency edges, blockers, redaction, input validation and readiness.');

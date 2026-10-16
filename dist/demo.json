@@ -1,0 +1,413 @@
+{
+  "kind": "List",
+  "sourceVersion": "v1.29.8",
+  "collection": {
+    "complete": false,
+    "limitations": [
+      "Illustrative EKS inventory, not a live scan."
+    ]
+  },
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "Namespace",
+      "metadata": {
+        "name": "payments",
+        "labels": {
+          "pod-security.kubernetes.io/enforce": "restricted"
+        }
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "payment-api",
+        "namespace": "payments",
+        "labels": {
+          "argocd.argoproj.io/instance": "payments"
+        }
+      },
+      "spec": {
+        "replicas": 3,
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "payment-api"
+            }
+          },
+          "spec": {
+            "serviceAccountName": "payment-api",
+            "containers": [
+              {
+                "name": "api",
+                "image": "123456789012.dkr.ecr.ap-southeast-1.amazonaws.com/payment-api:v2",
+                "env": [
+                  {
+                    "name": "DB_PASSWORD",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "name": "database-credentials",
+                        "key": "password"
+                      }
+                    }
+                  }
+                ],
+                "resources": {
+                  "requests": {
+                    "cpu": "500m",
+                    "memory": "512Mi"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ServiceAccount",
+      "metadata": {
+        "name": "payment-api",
+        "namespace": "payments",
+        "annotations": {
+          "eks.amazonaws.com/role-arn": "arn:aws:iam::123456789012:role/payment-api"
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "payment-api",
+        "namespace": "payments"
+      },
+      "spec": {
+        "selector": {
+          "app": "payment-api"
+        },
+        "ports": [
+          {
+            "port": 80,
+            "targetPort": 8080
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "Ingress",
+      "metadata": {
+        "name": "payment-api",
+        "namespace": "payments",
+        "annotations": {
+          "alb.ingress.kubernetes.io/scheme": "internet-facing"
+        }
+      },
+      "spec": {
+        "ingressClassName": "alb",
+        "rules": [
+          {
+            "host": "pay.example.com",
+            "http": {
+              "paths": [
+                {
+                  "path": "/",
+                  "pathType": "Prefix",
+                  "backend": {
+                    "service": {
+                      "name": "payment-api",
+                      "port": {
+                        "number": 80
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "StatefulSet",
+      "metadata": {
+        "name": "postgres",
+        "namespace": "payments"
+      },
+      "spec": {
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "postgres"
+            }
+          },
+          "spec": {
+            "containers": [
+              {
+                "name": "postgres",
+                "image": "postgres:16.4"
+              }
+            ],
+            "volumes": [
+              {
+                "name": "data",
+                "persistentVolumeClaim": {
+                  "claimName": "postgres-data"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "PersistentVolumeClaim",
+      "metadata": {
+        "name": "postgres-data",
+        "namespace": "payments"
+      },
+      "spec": {
+        "storageClassName": "gp3",
+        "accessModes": [
+          "ReadWriteOnce"
+        ],
+        "resources": {
+          "requests": {
+            "storage": "100Gi"
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "database-isolation",
+        "namespace": "payments"
+      },
+      "spec": {
+        "podSelector": {
+          "matchLabels": {
+            "app": "postgres"
+          }
+        },
+        "policyTypes": [
+          "Ingress"
+        ],
+        "ingress": [
+          {
+            "from": [
+              {
+                "podSelector": {
+                  "matchLabels": {
+                    "app": "payment-api"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "port": 5432
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "templates.gatekeeper.sh/v1",
+      "kind": "ConstraintTemplate",
+      "metadata": {
+        "name": "k8sallowedrepos"
+      },
+      "spec": {}
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Namespace",
+      "metadata": {
+        "name": "analytics"
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "inference",
+        "namespace": "analytics"
+      },
+      "spec": {
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "inference"
+            },
+            "annotations": {
+              "k8s.v1.cni.cncf.io/networks": "gpu-backend"
+            }
+          },
+          "spec": {
+            "nodeSelector": {
+              "accelerator": "nvidia"
+            },
+            "containers": [
+              {
+                "name": "server",
+                "image": "harbor.example.com/ai/inference:1.0",
+                "resources": {
+                  "limits": {
+                    "nvidia.com/gpu": 1
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "k8s.cni.cncf.io/v1",
+      "kind": "NetworkAttachmentDefinition",
+      "metadata": {
+        "name": "gpu-backend",
+        "namespace": "analytics"
+      },
+      "spec": {}
+    },
+    {
+      "apiVersion": "argoproj.io/v1alpha1",
+      "kind": "Application",
+      "metadata": {
+        "name": "payments",
+        "namespace": "argocd"
+      },
+      "spec": {
+        "destination": {
+          "namespace": "payments"
+        }
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "web-pilot",
+        "namespace": "payments"
+      },
+      "spec": {
+        "replicas": 1,
+        "selector": {
+          "matchLabels": {
+            "app": "web-pilot"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "web-pilot"
+            }
+          },
+          "spec": {
+            "automountServiceAccountToken": false,
+            "securityContext": {
+              "runAsNonRoot": true,
+              "runAsUser": 101,
+              "seccompProfile": {
+                "type": "RuntimeDefault"
+              }
+            },
+            "containers": [
+              {
+                "name": "web",
+                "image": "nginxinc/nginx-unprivileged:1.27-alpine",
+                "ports": [
+                  {
+                    "containerPort": 8080
+                  }
+                ],
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  }
+                },
+                "resources": {
+                  "requests": {
+                    "cpu": "100m",
+                    "memory": "64Mi"
+                  },
+                  "limits": {
+                    "cpu": "500m",
+                    "memory": "128Mi"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "web-pilot",
+        "namespace": "payments"
+      },
+      "spec": {
+        "type": "ClusterIP",
+        "clusterIP": "10.96.0.101",
+        "clusterIPs": [
+          "10.96.0.101"
+        ],
+        "selector": {
+          "app": "web-pilot"
+        },
+        "ports": [
+          {
+            "port": 80,
+            "targetPort": 8080
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "Ingress",
+      "metadata": {
+        "name": "web-pilot",
+        "namespace": "payments"
+      },
+      "spec": {
+        "ingressClassName": "nginx",
+        "rules": [
+          {
+            "host": "pilot.example.com",
+            "http": {
+              "paths": [
+                {
+                  "path": "/",
+                  "pathType": "Prefix",
+                  "backend": {
+                    "service": {
+                      "name": "web-pilot",
+                      "port": {
+                        "number": 80
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
