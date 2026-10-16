@@ -1,4 +1,4 @@
-import hashlib, importlib.util, json, subprocess, unittest
+import copy,hashlib, importlib.util, json, subprocess, unittest
 from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('runner','dist/image-runner.py');r=importlib.util.module_from_spec(spec);spec.loader.exec_module(r)
 RAW=json.dumps({'schemaVersion':2,'manifests':[{'platform':{'os':'linux','architecture':'amd64'}}]},separators=(',',':')).encode();DIGEST='sha256:'+hashlib.sha256(RAW).hexdigest()
@@ -23,6 +23,14 @@ class RunnerTests(unittest.TestCase):
     def test_legacy_manifest_rejected(self):
         with patch.object(r,'command',return_value=b'{"schemaVersion":1}'):self.assertEqual(r.run(self.plan())['results'][0]['status'],'Failed')
     def test_reuse_and_errors_continue(self):
-        p=self.plan();p['rows'].append({**p['rows'][0],'source':'other','sourceCanonical':'docker.io/other:x'})
+        p=self.plan();p['rows'].append({**p['rows'][0],'source':'other','sourceCanonical':'docker.io/other:x','destination':p['rows'][0]['destination']+'-other'})
         with patch.object(r,'command',side_effect=[RuntimeError('failed'),RAW,RAW]):report=r.run(p);self.assertEqual([x['status'] for x in report['results']],['Failed','Registry digest match'])
+    def test_copy_onto_a_source_or_shared_destination_is_refused(self):
+        p=self.plan();first=p['rows'][0]
+        onto=copy.deepcopy(p);onto['rows'].append({**first,'source':'b','sourceCanonical':first['destination'],'destination':'harbor.example.com/p/b:1'})
+        shared=copy.deepcopy(p);shared['rows'].append({**first,'source':'b','sourceCanonical':'docker.io/library/b:1'})
+        for bad,message in [(onto,'also a source'),(shared,'same destination')]:
+            with patch.object(r,'command') as call:
+                with self.assertRaisesRegex(ValueError,message):r.run(bad,copy=True)
+                call.assert_not_called()
 unittest.main()

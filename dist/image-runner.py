@@ -28,6 +28,11 @@ def inspect(reference):
 def run(plan,copy=False):
     if plan.get('schemaVersion')!=1 or plan.get('errors') or not isinstance(plan.get('rows'),list) or len(plan['rows'])>30000:
         raise ValueError('Plan is invalid or has unresolved errors')
+    rows=[r for r in plan['rows'] if isinstance(r,dict)]
+    if len(rows)!=len(plan['rows']):raise ValueError('Plan rows must be objects')
+    sources={r.get('sourceCanonical') for r in rows};copies=[r.get('destination') for r in rows if r.get('operation')=='Copy']
+    if any(d in sources for d in copies):raise ValueError('A copy destination is also a source image in this plan; refusing to overwrite it')
+    if len(set(copies))!=len(copies):raise ValueError('Two rows copy to the same destination; refusing an ambiguous plan')
     results=[]
     for row in plan['rows']:
         item={key:row.get(key) for key in ['source','sourceCanonical','destination','operation']}
