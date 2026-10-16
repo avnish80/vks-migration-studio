@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type Cluster, type Diff, type Finding, type Job, type Project, type Side, type Snapshot, type Workload, type WorkloadDetail, type WorkloadList } from '../api';
 import { navigate } from '../router';
+import { PilotSection } from './PilotSection';
 
 const STATE_LABEL: Record<string, string> = { Assessed: 'Assessed', Blocked: 'Blocked', NotInLatestSnapshot: 'Not in latest inventory' };
 
@@ -219,6 +220,7 @@ function WorkloadPanel({ projectId, workloadId, onClose }: { projectId: string; 
         <p className="hint">{detail.kind} · {STATE_LABEL[detail.state] ?? detail.state}</p>
         <h3>Findings</h3>
         <FindingList items={detail.findings} />
+        {detail.kind === 'Deployment' && <PilotSection projectId={projectId} workloadId={workloadId} />}
         {detail.edges.length > 0 && (<>
           <h3>Connected resources</h3>
           <ul className="plain">{detail.edges.map((e, i) => <li key={i} className="mono">{e.from === detail.resource ? `→ ${e.to}` : `← ${e.from}`} <span className="hint">({e.type})</span></li>)}</ul>

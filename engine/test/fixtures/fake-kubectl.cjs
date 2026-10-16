@@ -11,13 +11,14 @@ const fail = msg => { process.stderr.write(msg); process.exit(1); };
 
 if (args.includes('config') && args.includes('view')) out({
   'current-context': 'lab-source',
-  contexts: ['lab-source', 'lab-target', 'alias-of-source', 'denied', 'down'].map(n => ({ name: n, context: { cluster: n + '-cluster', user: 'admin@corp' } })),
-  clusters: ['lab-source', 'lab-target', 'alias-of-source', 'denied', 'down'].map(n => ({ name: n + '-cluster', cluster: { server: 'https://' + n + '.example:6443', 'certificate-authority-data': 'DATA+OMITTED' } })),
+  contexts: ['lab-source', 'lab-target', 'lab-target-pilot', 'alias-of-source', 'denied', 'down'].map(n => ({ name: n, context: { cluster: n + '-cluster', user: 'admin@corp' } })),
+  clusters: ['lab-source', 'lab-target', 'lab-target-pilot', 'alias-of-source', 'denied', 'down'].map(n => ({ name: n + '-cluster', cluster: { server: 'https://' + n + '.example:6443', 'certificate-authority-data': 'DATA+OMITTED' } })),
   users: [{ name: 'admin@corp', user: { token: 'REDACTED' } }],
 });
 if (ctx === 'denied') fail('Error from server (Forbidden): namespaces "kube-system" is forbidden: User "secret-user@corp.example" cannot get resource');
 if (ctx === 'down') fail('Unable to connect to the server: dial tcp 10.9.9.9:6443: connect: connection refused');
-const uidFile = path.join(dir, (ctx === 'alias-of-source' ? 'lab-source' : ctx) + '.uid');
+if (args.includes('auth') && args.includes('can-i')) { const yes = fs.existsSync(path.join(dir, ctx + '.admin')); process.stdout.write(yes ? 'yes\n' : 'no\n'); process.exit(yes ? 0 : 1); }
+const uidFile = path.join(dir, (ctx === 'alias-of-source' ? 'lab-source' : ctx === 'lab-target-pilot' ? 'lab-target' : ctx) + '.uid');
 const uid = fs.existsSync(uidFile) ? fs.readFileSync(uidFile, 'utf8').trim() : '00000000-0000-0000-0000-000000000000';
 if (args.includes('version')) out({ serverVersion: { gitVersion: 'v1.33.4' } });
 if (args.includes('api-resources')) { process.stdout.write('deployments.apps\n'); process.exit(0); }

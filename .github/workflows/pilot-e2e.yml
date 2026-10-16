@@ -1,0 +1,37 @@
+name: pilot-e2e
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  # A real pilot between two kind clusters, through the engine API.
+  pilot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: engine/package-lock.json
+      - name: Build the engine
+        working-directory: engine
+        run: npm ci && npm run build
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: source
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: target
+      - name: Pilot end to end
+        run: |
+          set -o pipefail
+          if ! scripts/ci-pilot-e2e.sh > /tmp/pilot-e2e.log 2>&1; then
+            cat /tmp/pilot-e2e.log
+            # Job logs are not always reachable where failures are diagnosed: annotate the essentials.
+            grep -v '^::' /tmp/pilot-e2e.log | tail -12 | cut -c1-400 | while IFS= read -r l; do echo "::error title=pilot::${l//%/%25}"; done
+            exit 1
+          fi
+          cat /tmp/pilot-e2e.log

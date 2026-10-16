@@ -1,0 +1,77 @@
+# Pilot login for VKS Migration Studio: write access to ONE target namespace (__NAMESPACE__), for
+# single-workload pilots. Created by scripts/pilot-kubeconfig.sh (or .ps1), which replaces
+# __NAMESPACE__ and __NAME__ (vks-migration-studio-pilot-<namespace>): each namespace gets its own
+# service account, so a login never reaches a namespace it was not made for.
+#
+# Within __NAMESPACE__, RBAC cannot tell pilot objects from others: this login can patch and delete
+# any Deployment or Service there. The engine only deletes objects whose UID and run label it
+# recorded, with UID and resourceVersion preconditions; pilot in a namespace without production.
+#
+# The token does not expire. Revoke it (and everything here) with:
+#   kubectl -n __NAMESPACE__ delete rolebinding,role __NAME__
+#   kubectl delete clusterrolebinding __NAME__
+#   kubectl -n vks-migration-studio-pilot delete secret __NAME__-token
+#   kubectl -n vks-migration-studio-pilot delete serviceaccount __NAME__
+# Re-run the script to issue a new token after deleting the secret.
+apiVersion: v1
+kind: Namespace
+metadata: { name: vks-migration-studio-pilot }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: __NAME__, namespace: vks-migration-studio-pilot }
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: __NAME__-token
+  namespace: vks-migration-studio-pilot
+  annotations: { kubernetes.io/service-account.name: __NAME__ }
+type: kubernetes.io/service-account-token
+---
+# Cluster-wide: read the identity namespace and the target namespace, and count ready nodes.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: { name: vks-migration-studio-pilot }
+rules:
+  - { apiGroups: [""], resources: [namespaces], verbs: [get] }
+  - { apiGroups: [""], resources: [nodes], verbs: [list] }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: __NAME__ }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: vks-migration-studio-pilot }
+subjects:
+  - { kind: ServiceAccount, name: __NAME__, namespace: vks-migration-studio-pilot }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: __NAME__, namespace: __NAMESPACE__ }
+rules:
+  # Create, check and remove the pilot's Deployment and Services (deletes carry UID preconditions).
+  - { apiGroups: [apps], resources: [deployments], verbs: [get, list, watch, create, patch, delete] }
+  - { apiGroups: [""], resources: [services], verbs: [get, list, watch, create, patch, delete] }
+  # Observe the rollout and reach one pilot Pod for the smoke test.
+  - { apiGroups: [apps], resources: [replicasets], verbs: [get, list, watch] }
+  - { apiGroups: [""], resources: [pods], verbs: [get, list, watch] }
+  - { apiGroups: [""], resources: [pods/portforward], verbs: [create] }
+  - { apiGroups: [""], resources: [events], verbs: [get, list] }
+  # Confirm referenced objects exist. Reading Secrets here grants nothing new: anyone who can create
+  # Deployments in this namespace can already mount them.
+  - { apiGroups: [""], resources: [serviceaccounts, configmaps, secrets], verbs: [get] }
+  # Isolation checks: anything that could route traffic to, or scale, the pilot.
+  - { apiGroups: [apps], resources: [statefulsets, daemonsets], verbs: [list] }
+  - { apiGroups: [batch], resources: [jobs, cronjobs], verbs: [list] }
+  - { apiGroups: [networking.k8s.io], resources: [ingresses], verbs: [get, list] }
+  - { apiGroups: [autoscaling], resources: [horizontalpodautoscalers], verbs: [list] }
+  - { apiGroups: [gateway.networking.k8s.io], resources: [httproutes, grpcroutes, tlsroutes, tcproutes, udproutes, referencegrants], verbs: [get, list] }
+  - { apiGroups: [projectcontour.io], resources: [httpproxies], verbs: [list] }
+  - { apiGroups: [keda.sh], resources: [scaledobjects], verbs: [list] }
+  - { apiGroups: [autoscaling.k8s.io], resources: [verticalpodautoscalers], verbs: [list] }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: __NAME__, namespace: __NAMESPACE__ }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: __NAME__ }
+subjects:
+  - { kind: ServiceAccount, name: __NAME__, namespace: vks-migration-studio-pilot }
