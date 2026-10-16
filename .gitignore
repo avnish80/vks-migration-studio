@@ -13,3 +13,7 @@ kubeconfig*
 __pycache__/
 node_modules/
 .DS_Store
+# Engine and UI build output and local data
+engine/build/
+ui/dist/
+.studio-data/
