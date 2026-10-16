@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, ApiError, captureTokenFromUrl, clearToken, getToken, setToken, type Version } from './api';
-import { hasUnsaved, navigate, useRoute, type Route } from './router';
+import { hasUnsaved, navigate, useLocation, type Route } from './router';
+import { Clusters } from './views/Clusters';
 import { Estate } from './views/Estate';
 import { Audit } from './views/Audit';
 import { Placeholder } from './views/Placeholder';
@@ -49,11 +50,11 @@ function SignIn({ message, onSubmit }: { message?: string; onSubmit: (token: str
 
 const NAV: { group: string; items: { to: Route; label: string; soon?: string }[] }[] = [
   { group: 'Migrate', items: [{ to: '/estate', label: 'Estate' }, { to: '/runs', label: 'Pilot runs', soon: '1.2' }] },
-  { group: 'Platform', items: [{ to: '/clusters', label: 'Clusters', soon: '1.1' }, { to: '/audit', label: 'Audit log' }] },
+  { group: 'Platform', items: [{ to: '/clusters', label: 'Clusters' }, { to: '/audit', label: 'Audit log' }] },
 ];
 
 function Shell({ version, onSignOut }: { version: string; onSignOut: () => void }) {
-  const route = useRoute();
+  const { route, params } = useLocation();
   return (
     <div className="app">
       <header className="header">
@@ -77,9 +78,9 @@ function Shell({ version, onSignOut }: { version: string; onSignOut: () => void 
           ))}
         </nav>
         <main className="content">
-          {route === '/estate' && <Estate />}
+          {route === '/estate' && <Estate projectId={params.get('project')} />}
           {route === '/audit' && <Audit />}
-          {route === '/clusters' && <Placeholder title="Clusters" lede="Register source and VKS target contexts from your kubeconfig." milestone="1.1" body="The engine will read contexts from the kubeconfig you mount, record each cluster's identity, and show when a VKS token needs a fresh kubectl vsphere login. No credentials are stored." />}
+          {route === '/clusters' && <Clusters />}
           {route === '/runs' && <Placeholder title="Pilot runs" lede="Validate, deploy, observe, inspect and clean up a single-workload pilot." milestone="1.2" body="Runs will execute as engine jobs with evidence recorded directly — no receipt files to import. One unresolved run per workload is enforced." />}
         </main>
       </div>
