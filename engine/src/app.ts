@@ -10,6 +10,7 @@ import { projectRoutes } from './routes/projects.js';
 import { auditRoutes } from './routes/audit.js';
 import { clusterRoutes } from './routes/clusters.js';
 import { inventoryRoutes } from './routes/inventory.js';
+import { pilotRoutes } from './routes/pilots.js';
 import type { JobRunner } from './jobs.js';
 
 declare module 'fastify' {
@@ -96,6 +97,7 @@ export async function buildApp({ config, db, core, token, jobs, logger = false }
   auditRoutes(app, db);
   clusterRoutes(app, db, config);
   inventoryRoutes(app, db, core, config, jobs);
+  pilotRoutes(app, db, core, config, jobs);
 
   const uiBuilt = fs.existsSync(config.uiDir) && fs.existsSync(`${config.uiDir}/index.html`);
   if (uiBuilt) await app.register(fastifyStatic, { root: config.uiDir, wildcard: false, index: ['index.html'] });

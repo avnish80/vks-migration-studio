@@ -199,7 +199,7 @@ describe('migrations', () => {
     await (db1 as any).insertInto('clusters').values({ id: 'c', context_name: 'ctx', role: 'target', observed_uid: 'u', last_seen_at: null, created_at: now }).execute();
     await db1.insertInto('blobs').values({ hash: 'h', size: 0, compressed: Buffer.alloc(0), created_at: now }).execute();
     await (db1 as any).insertInto('snapshots').values({ id: 's', project_id: 'p', cluster_id: 'c', blob_hash: 'h', collected_at: now, coverage: '{}' }).execute();
-    expect(await migrate(db1)).toEqual(['002_inventory']);
+    expect(await migrate(db1)).toEqual(['002_inventory', '003_pilots']);
     const s = await db1.selectFrom('snapshots').selectAll().executeTakeFirstOrThrow();
     expect(s).toMatchObject({ id: 's', side: 'target', origin: 'collected', cluster_id: 'c' });
     await db1.destroy();
@@ -285,7 +285,7 @@ describe('migration 002', () => {
     await new Migrator({ db: db1, provider }).migrateTo('001_initial');
     const now = new Date().toISOString();
     for (const id of ['c1', 'c2']) await (db1 as any).insertInto('clusters').values({ id, context_name: 'same', role: 'source', observed_uid: id, last_seen_at: null, created_at: now }).execute();
-    expect(await migrate(db1)).toEqual(['002_inventory']);
+    expect(await migrate(db1)).toEqual(['002_inventory', '003_pilots']);
     const rows = await db1.selectFrom('clusters').select(['id', 'context_name', 'retired_at']).orderBy('id').execute();
     expect(rows[0]).toMatchObject({ id: 'c1', context_name: 'same', retired_at: null });
     expect(rows[1]!.context_name).toMatch(/^same#retired-/);
@@ -302,7 +302,7 @@ describe('migration 002', () => {
     const cols = (await sql<{ name: string }>`pragma table_info(clusters)`.execute(db1)).rows.map(r => r.name);
     expect(cols).not.toContain('name');   // earlier changes rolled back
     await sql`alter table jobs drop column progress`.execute(db1);
-    expect(await migrate(db1)).toEqual(['002_inventory']);   // and the step can be retried
+    expect(await migrate(db1)).toEqual(['002_inventory', '003_pilots']);   // and the step can be retried
     await db1.destroy();
   });
 });

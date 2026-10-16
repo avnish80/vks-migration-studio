@@ -7,6 +7,7 @@ import { loadCore } from '../src/core.js';
 import { openDatabase, migrate } from '../src/db/index.js';
 import { JobRunner } from '../src/jobs.js';
 import { collectHandler } from '../src/collect.js';
+import { pilotHandler } from '../src/pilot.js';
 
 export const TOKEN = 't'.repeat(43);
 export const auth = { authorization: `Bearer ${TOKEN}`, host: '127.0.0.1:8080' };
@@ -17,7 +18,7 @@ export async function makeApp(options: { uiDir?: string; allowedHosts?: string }
   const db = openDatabase(':memory:');
   await migrate(db);
   const core = loadCore(config.coreDir);
-  const jobs = new JobRunner(db, { collect: collectHandler(db, core, config) }, 60_000);
+  const jobs = new JobRunner(db, { collect: collectHandler(db, core, config), pilot: pilotHandler(db, config) }, 60_000);
   const app = await buildApp({ config, db, core, token: TOKEN, jobs });
   return { app, db, dataDir, jobs, config, core };
 }

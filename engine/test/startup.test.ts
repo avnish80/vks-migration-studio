@@ -35,7 +35,7 @@ describe('start-up', () => {
   it('migrates a file database idempotently', async () => {
     const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'studio-db-')), 'studio.db');
     let db = openDatabase(file);
-    expect(await migrate(db)).toEqual(['001_initial', '002_inventory']);
+    expect(await migrate(db)).toEqual(['001_initial', '002_inventory', '003_pilots']);
     await db.destroy();
     db = openDatabase(file);
     expect(await migrate(db)).toEqual([]);

@@ -7,6 +7,7 @@ import { buildApp } from './app.js';
 import { VERSION } from './version.js';
 import { JobRunner } from './jobs.js';
 import { collectHandler } from './collect.js';
+import { pilotHandler, recoverRuns } from './pilot.js';
 
 async function main(): Promise<void> {
   // Everything the engine writes (database, token) is private to its user.
@@ -16,7 +17,9 @@ async function main(): Promise<void> {
   const applied = await migrate(db);
   const core = loadCore(config.coreDir);
   const { token, created } = loadOrCreateToken(config.dataDir, config.token);
-  const jobs = new JobRunner(db, { collect: collectHandler(db, core, config) });
+  const jobs = new JobRunner(db, { collect: collectHandler(db, core, config), pilot: pilotHandler(db, config) });
+  const recovered = await recoverRuns(db);
+  if (recovered) process.stdout.write(`${recovered} pilot run(s) were interrupted by a restart and now need an inspection.\n`);
   const app = await buildApp({ config, db, core, token, jobs, logger: true });
   await app.listen({ host: config.host, port: config.port });
   jobs.start();

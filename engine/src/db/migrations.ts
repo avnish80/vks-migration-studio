@@ -144,6 +144,25 @@ const inventory: Migration = {
   },
 };
 
-export const migrations: Record<string, Migration> = { '001_initial': initial, '002_inventory': inventory };
+const pilots: Migration = {
+  async up(db: Kysely<any>) {
+    await db.transaction().execute(async trx => {
+      // A target cluster's pilot login: a separate kubeconfig context with write access to the pilot
+      // namespace only. It must reach the same cluster (same kube-system UID) as the read-only context.
+      await trx.schema.alterTable('clusters').addColumn('pilot_context_name', 'text').execute();
+      for (const [column, type] of [['project_id', 'text'], ['settings', 'text'], ['blockers', 'integer'], ['source_snapshot_id', 'text'], ['target_snapshot_id', 'text']] as const) {
+        await trx.schema.alterTable('plans').addColumn(column, type, c => (type === 'integer' ? c.notNull().defaultTo(0) : c)).execute();
+      }
+      await trx.schema.alterTable('runs').addColumn('project_id', 'text').execute();
+      await trx.schema.alterTable('runs').addColumn('status_detail', 'text').execute();
+      // Runs that ended without leaving anything on the target no longer block a new run.
+      await sql`drop index runs_one_active_per_workload`.execute(trx);
+      await sql`create unique index runs_one_active_per_workload on runs (workload_id) where state not in ('Cleaned','Absent','Discarded','ValidationFailed','NothingCreated')`.execute(trx);
+      await trx.schema.createIndex('evidence_run').on('evidence').columns(['run_id', 'observed_at']).execute();
+    });
+  },
+};
+
+export const migrations: Record<string, Migration> = { '001_initial': initial, '002_inventory': inventory, '003_pilots': pilots };
 
 export const provider: MigrationProvider = { getMigrations: async () => migrations };

@@ -1,6 +1,6 @@
 {
   "name": "vks-migration-studio-engine",
-  "version": "1.1.0-alpha.1",
+  "version": "1.2.0-alpha.1",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",

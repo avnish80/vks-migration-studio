@@ -6,7 +6,7 @@ import { record } from '../audit.js';
 import { clusterUid, KubeError, listContexts } from '../kube.js';
 
 type Row = { id: string; context_name: string; name: string | null; role: 'source' | 'target'; observed_uid: string | null; last_seen_at: string | null; last_error: string | null; retired_at: string | null; created_at: string };
-const view = (c: Row) => ({ id: c.id, contextName: c.context_name, name: c.name ?? c.context_name, role: c.role, clusterUid: c.observed_uid, lastSeenAt: c.last_seen_at, lastError: c.last_error, createdAt: c.created_at });
+const view = (c: Row & { pilot_context_name?: string | null }) => ({ id: c.id, contextName: c.context_name, name: c.name ?? c.context_name, role: c.role, clusterUid: c.observed_uid, pilotContextName: c.pilot_context_name ?? null, lastSeenAt: c.last_seen_at, lastError: c.last_error, createdAt: c.created_at });
 
 const kubeReply = (e: unknown) => e instanceof KubeError ? { status: e.reason === 'NoKubeconfig' || e.reason === 'NoKubectl' ? 503 : 502, body: { error: e.reason, message: e.message } } : undefined;
 
@@ -40,7 +40,7 @@ export function clusterRoutes(app: FastifyInstance, db: DB, config: Config): voi
     const same = await db.selectFrom('clusters').select(['context_name']).where('observed_uid', '=', uid).where('retired_at', 'is', null).executeTakeFirst();
     if (same) return reply.code(409).send({ error: 'Conflict', message: `This is the same cluster as context ${same.context_name}, which is already registered.` });
     const now = new Date().toISOString();
-    const row: Row = { id: crypto.randomUUID(), context_name: contextName, name: name?.trim() || null, role, observed_uid: uid, last_seen_at: now, last_error: null, retired_at: null, created_at: now };
+    const row: Row & { pilot_context_name: null } = { id: crypto.randomUUID(), context_name: contextName, name: name?.trim() || null, role, observed_uid: uid, last_seen_at: now, last_error: null, retired_at: null, pilot_context_name: null, created_at: now };
     try { await db.insertInto('clusters').values(row).execute(); }
     catch (e) { if (/UNIQUE/.test(String(e))) return reply.code(409).send({ error: 'Conflict', message: 'That context is already registered.' }); throw e; }
     await record(db, 'cluster.register', `cluster/${row.id}`, { context: contextName, role, clusterUid: uid });
