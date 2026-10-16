@@ -101,6 +101,39 @@ const initial: Migration = {
   },
 };
 
-export const migrations: Record<string, Migration> = { '001_initial': initial };
+const inventory: Migration = {
+  async up(db: Kysely<any>) {
+    // Snapshots can come from a registered cluster, a file import or the demo inventory.
+    await sql`create table snapshots_new (
+      id text primary key,
+      project_id text not null references projects(id),
+      side text not null check (side in ('source','target')),
+      origin text not null check (origin in ('collected','imported','demo')),
+      cluster_id text references clusters(id),
+      blob_hash text not null references blobs(hash),
+      analysis_hash text references blobs(hash),
+      resource_count integer not null default 0,
+      collected_at text not null,
+      coverage text not null default '{}'
+    )`.execute(db);
+    await sql`insert into snapshots_new (id, project_id, side, origin, cluster_id, blob_hash, collected_at, coverage)
+      select s.id, s.project_id, coalesce(c.role, 'source'), 'collected', s.cluster_id, s.blob_hash, s.collected_at, s.coverage from snapshots s left join clusters c on c.id = s.cluster_id`.execute(db);
+    await sql`drop table snapshots`.execute(db);
+    await sql`alter table snapshots_new rename to snapshots`.execute(db);
+    await db.schema.createIndex('snapshots_project_side').on('snapshots').columns(['project_id', 'side', 'collected_at']).execute();
+
+    await db.schema.alterTable('clusters').addColumn('name', 'text').execute();
+    await db.schema.alterTable('clusters').addColumn('last_error', 'text').execute();
+    await db.schema.createIndex('clusters_context').on('clusters').column('context_name').unique().execute();
+
+    for (const [column, type] of [['kind', 'text'], ['namespace', 'text'], ['name', 'text'], ['snapshot_id', 'text'], ['blockers', 'integer'], ['reviews', 'integer']] as const) {
+      await db.schema.alterTable('workloads').addColumn(column, type, c => (type === 'integer' ? c.notNull().defaultTo(0) : c)).execute();
+    }
+    for (const column of ['project_id', 'progress', 'result', 'error']) await db.schema.alterTable('jobs').addColumn(column, 'text').execute();
+    await db.schema.createIndex('jobs_project').on('jobs').columns(['project_id', 'created_at']).execute();
+  },
+};
+
+export const migrations: Record<string, Migration> = { '001_initial': initial, '002_inventory': inventory };
 
 export const provider: MigrationProvider = { getMigrations: async () => migrations };

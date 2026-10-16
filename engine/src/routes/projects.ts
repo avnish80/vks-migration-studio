@@ -13,11 +13,13 @@ const projectBody = {
   },
 } as const;
 
-const view = (p: { id: string; name: string; description: string; created_at: string; updated_at: string }) => ({ id: p.id, name: p.name, description: p.description, createdAt: p.created_at, updatedAt: p.updated_at });
+type Row = { id: string; name: string; description: string; source_cluster_id: string | null; target_cluster_id: string | null; created_at: string; updated_at: string };
+const view = (p: Row) => ({ id: p.id, name: p.name, description: p.description, sourceClusterId: p.source_cluster_id, targetClusterId: p.target_cluster_id, createdAt: p.created_at, updatedAt: p.updated_at });
+const COLUMNS = ['id', 'name', 'description', 'source_cluster_id', 'target_cluster_id', 'created_at', 'updated_at'] as const;
 
 export function projectRoutes(app: FastifyInstance, db: DB): void {
   app.get('/api/projects', async () => {
-    const rows = await db.selectFrom('projects').select(['id', 'name', 'description', 'created_at', 'updated_at']).orderBy('created_at', 'desc').execute();
+    const rows = await db.selectFrom('projects').select(COLUMNS).orderBy('created_at', 'desc').execute();
     return { items: rows.map(view) };
   });
 
@@ -32,7 +34,7 @@ export function projectRoutes(app: FastifyInstance, db: DB): void {
   });
 
   app.get<{ Params: { id: string } }>('/api/projects/:id', async (request, reply) => {
-    const row = await db.selectFrom('projects').select(['id', 'name', 'description', 'created_at', 'updated_at']).where('id', '=', request.params.id).executeTakeFirst();
+    const row = await db.selectFrom('projects').select(COLUMNS).where('id', '=', request.params.id).executeTakeFirst();
     if (!row) return reply.code(404).send({ error: 'NotFound', message: 'No project with that id.' });
     return view(row);
   });
