@@ -7,9 +7,10 @@ function sanitize(v,key='') { if(Array.isArray(v))return v.map(x=>sanitize(x)); 
 function redactGitOps(r){
  // Same rule as collect.py: GitOps fields that commonly carry plaintext credentials.
  const spec=r&&typeof r.spec==='object'&&r.spec?r.spec:null;if(!spec)return r;
- if(r.kind==='HelmRelease')delete spec.values;
- if(r.kind==='Kustomization'&&spec.postBuild&&typeof spec.postBuild==='object')delete spec.postBuild.substitute;
- if(r.kind==='Application'||r.kind==='ApplicationSet')for(const s of [spec,spec.template?.spec].filter(x=>x&&typeof x==='object'))for(const src of [s.source,...(Array.isArray(s.sources)?s.sources:[])])if(src&&typeof src==='object'){for(const f of ['values','valuesObject','parameters','fileParameters'])if(src.helm&&typeof src.helm==='object')delete src.helm[f];for(const f of ['env','parameters'])if(src.plugin&&typeof src.plugin==='object')delete src.plugin[f];}
+ if(r.kind==='HelmRelease'){delete spec.values;delete spec.postRenderers;}
+ if(r.kind==='Kustomization'){delete spec.patches;if(spec.postBuild&&typeof spec.postBuild==='object')delete spec.postBuild.substitute;}
+ if(r.kind==='ApplicationSet'){delete spec.generators;delete spec.templatePatch;}
+ if(r.kind==='Application'||r.kind==='ApplicationSet')for(const s of [spec,spec.template?.spec].filter(x=>x&&typeof x==='object'))for(const src of [s.source,...(Array.isArray(s.sources)?s.sources:[])])if(src&&typeof src==='object'){for(const f of ['values','valuesObject','parameters','fileParameters'])if(src.helm&&typeof src.helm==='object')delete src.helm[f];for(const f of ['env','parameters'])if(src.plugin&&typeof src.plugin==='object')delete src.plugin[f];if(src.kustomize&&typeof src.kustomize==='object')delete src.kustomize.patches;}
  return r;
 }
 function normalize(raw){let items=Array.isArray(raw)?raw:raw.items; if(!Array.isArray(items))throw Error('Expected a Kubernetes List, an array of resources, or collector inventory with items.');items=items.flatMap(x=>x?.kind?.endsWith('List')&&Array.isArray(x.items)?x.items:[x]);if(items.length>30000)throw Error('Maximum 30,000 resources. Export a smaller namespace scope.');if(items.some(x=>!x||typeof x.kind!=='string'||!x.metadata?.name))throw Error('Each resource needs kind and metadata.name.');return {items:sanitize(items).map(redactGitOps),collection:sanitize(raw.collection||{}),sourceVersion:raw.sourceVersion||'Not supplied'};}

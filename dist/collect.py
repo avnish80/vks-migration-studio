@@ -21,14 +21,17 @@ def query(args):
 def redact(item):
     spec=item.get('spec') if isinstance(item.get('spec'),dict) else {}
     kind=item.get('kind')
-    if kind=='HelmRelease':spec.pop('values',None)
-    if kind=='Kustomization' and isinstance(spec.get('postBuild'),dict):spec['postBuild'].pop('substitute',None)
+    if kind=='HelmRelease':spec.pop('values',None);spec.pop('postRenderers',None)
+    if kind=='Kustomization':
+        spec.pop('patches',None)
+        if isinstance(spec.get('postBuild'),dict):spec['postBuild'].pop('substitute',None)
+    if kind=='ApplicationSet':spec.pop('generators',None);spec.pop('templatePatch',None)
     if kind in ['Application','ApplicationSet']:
         specs=[spec]+([spec['template']['spec']] if isinstance(spec.get('template'),dict) and isinstance(spec['template'].get('spec'),dict) else [])
         for s in specs:
             for source in [s.get('source')]+(s.get('sources') if isinstance(s.get('sources'),list) else []):
                 if not isinstance(source,dict):continue
-                for key,fields in [('helm',['values','valuesObject','parameters','fileParameters']),('plugin',['env','parameters'])]:
+                for key,fields in [('helm',['values','valuesObject','parameters','fileParameters']),('plugin',['env','parameters']),('kustomize',['patches'])]:
                     if isinstance(source.get(key),dict):
                         for f in fields:source[key].pop(f,None)
     return item
@@ -37,29 +40,37 @@ def clean(v):
     if isinstance(v,dict):return {k:clean(x) for k,x in v.items() if k not in ['data','stringData','binaryData','value','status','managedFields','kubectl.kubernetes.io/last-applied-configuration']}
     return v
 try:version=query(['version','-o','json']).get('serverVersion',{}).get('gitVersion','unknown')
-except Exception as e:version='unknown';errors.append({'resource':'version','reason':str(e)})
+except Exception as e:version='unknown';errors.append({'resource':'version','reason':str(e) if isinstance(e,RuntimeError) else 'Other'})
 # List API types without reading Secret payloads or arbitrary CRs. Unknown custom kinds
 # are represented by CRD definitions and require separate local inspection.
 resources=['namespaces','nodes','deployments','statefulsets','daemonsets','jobs','cronjobs','services','ingresses','ingressclasses','persistentvolumeclaims','persistentvolumes','storageclasses','serviceaccounts','roles','rolebindings','clusterroles','clusterrolebindings','networkpolicies','poddisruptionbudgets','horizontalpodautoscalers','customresourcedefinitions','validatingwebhookconfigurations','mutatingwebhookconfigurations','validatingadmissionpolicies','validatingadmissionpolicybindings']
 for name in resources:
     try:
         items.extend(redact(x) for x in clean(query(['get',name,'--all-namespaces','-o','json']).get('items',[])));queried.append(name)
-    except Exception as e:errors.append({'resource':name,'reason':str(e)})
+    except Exception as e:errors.append({'resource':name,'reason':str(e) if isinstance(e,RuntimeError) else 'Other'})
 # Known controller/policy types. API absence is recorded as coverage information.
 optional=['csidrivers.storage.k8s.io','volumesnapshotclasses.snapshot.storage.k8s.io','configs.config.gatekeeper.sh','syncsets.syncset.gatekeeper.sh','providers.externaldata.gatekeeper.sh','assign.mutations.gatekeeper.sh','assignmetadata.mutations.gatekeeper.sh','assignimage.mutations.gatekeeper.sh','modifyset.mutations.gatekeeper.sh','adminnetworkpolicies.policy.networking.k8s.io','baselineadminnetworkpolicies.policy.networking.k8s.io','validatingpolicies.policies.kyverno.io','mutatingpolicies.policies.kyverno.io','network-attachment-definitions.k8s.cni.cncf.io','constrainttemplates.templates.gatekeeper.sh','clusterpolicies.kyverno.io','policies.kyverno.io','applications.argoproj.io','applicationsets.argoproj.io','helmreleases.helm.toolkit.fluxcd.io','kustomizations.kustomize.toolkit.fluxcd.io','externalsecrets.external-secrets.io','secretstores.external-secrets.io','clustersecretstores.external-secrets.io','gateways.gateway.networking.k8s.io','gatewayclasses.gateway.networking.k8s.io','httproutes.gateway.networking.k8s.io','grpcroutes.gateway.networking.k8s.io','tlsroutes.gateway.networking.k8s.io','tcproutes.gateway.networking.k8s.io','udproutes.gateway.networking.k8s.io','referencegrants.gateway.networking.k8s.io','httpproxies.projectcontour.io','scaledobjects.keda.sh','verticalpodautoscalers.autoscaling.k8s.io','clusternetworkpolicies.crd.antrea.io','networkpolicies.crd.antrea.io','globalnetworkpolicies.crd.projectcalico.org','networkpolicies.crd.projectcalico.org','ciliumnetworkpolicies.cilium.io','ciliumclusterwidenetworkpolicies.cilium.io','authorizationpolicies.security.istio.io','peerauthentications.security.istio.io']
+def listing(args):
+    """Run a discovery command. kubectl exits 1 with a partial list when one aggregated API is
+    down; keep that list and record the gap as a category, never the raw error."""
+    try:result=subprocess.run(base+args,capture_output=True,text=True,timeout=120)
+    except subprocess.TimeoutExpired:return [],'Timeout'
+    if result.returncode==0:return result.stdout.split(),None
+    if result.stdout.strip() and 'unable to retrieve the complete list of server APIs' in result.stderr:return result.stdout.split(),'PartialDiscovery'
+    return [],reason(result.stderr)
 try:
-    available=set(subprocess.run(base+['api-resources','-o','name'],capture_output=True,text=True,check=True,timeout=120).stdout.split())
+    names,problem=listing(['api-resources','-o','name']);available=set(names)
+    if problem:errors.append({'resource':'api-resources','reason':problem})
     for crd in items:
         if crd['kind']=='CustomResourceDefinition' and crd.get('spec',{}).get('group')=='constraints.gatekeeper.sh':optional.append(crd['metadata']['name'])
     for name in optional:
         if name in available:
             try:
                 items.extend(redact(x) for x in clean(query(['get',name,'--all-namespaces','-o','json']).get('items',[])));queried.append(name)
-            except Exception as e:errors.append({'resource':name,'reason':str(e)})
-except Exception as e:errors.append({'resource':'api-resources','reason':str(e)})
-try:
-    api_versions=subprocess.run(base+['api-versions'],capture_output=True,text=True,check=True,timeout=120).stdout.split();api_discovery=True
-except Exception as e:errors.append({'resource':'api-versions','reason':str(e)})
+            except Exception as e:errors.append({'resource':name,'reason':str(e) if isinstance(e,RuntimeError) else 'Other'})
+except Exception:errors.append({'resource':'api-resources','reason':'Other'})
+api_versions,problem=listing(['api-versions']);api_discovery=problem is None
+if problem:errors.append({'resource':'api-versions','reason':problem})
 result={'kind':'List','apiVersion':'v1','sourceVersion':version,'collection':{'complete':False,'collectorVersion':'0.4.0','queriedResources':queried,'apiVersions':api_versions,'apiDiscoveryComplete':api_discovery,'collectedAt':datetime.datetime.now(datetime.timezone.utc).isoformat(),'errors':errors,'limitations':['Secrets and ConfigMaps are not queried. Inline env values, data, status and managedFields are omitted.','Not all custom resources are collected. Confirm unknown operators locally.','Annotations, pod commands/args and arbitrary custom fields may contain sensitive data. Inspect before import.','Runtime dependencies, target compatibility and enforcement are not tested.']},'items':items}
 fd=os.open(a.output,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
 with os.fdopen(fd,'w') as f:json.dump(result,f,indent=2)
