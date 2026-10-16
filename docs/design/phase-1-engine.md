@@ -1,6 +1,6 @@
 # Phase 1 design: the Migration Studio engine
 
-Status: **draft for review**. Nothing in this document is built yet. Comment on the pull request; decisions marked **Decision needed** are open.
+Status: **draft for review**. Nothing in this document is built yet. Comment on the pull request. Decisions 1–4 in section 8 are settled; the data-movement decision is open.
 
 ## 1. Why change the design
 
@@ -28,7 +28,7 @@ A migration engine has to hold state, run the work itself and record evidence di
 
 - Multi-workload waves and parallel execution (phase 2).
 - In-cluster deployment with a Helm chart, multi-user access and OIDC (phase 2).
-- Stateful migration and data movement (phase 3, orchestrating Velero).
+- Stateful migration and data movement (phase 3; see section 8, decision 5).
 - GitOps execution mode (phase 3).
 - Production traffic cutover. The production gate stays closed.
 
@@ -144,7 +144,7 @@ Discovered → Assessed → Planned → Validated → Piloting → PilotPassed
 
 The Python runners stay available as standalone tools for people who want to work without the engine.
 
-**Decision needed:** port to TypeScript in phase 1b as proposed, or keep the Python runners longer?
+**Decided:** port to TypeScript in milestone 1.4.
 
 ### 3.8 Credentials and VKS sign-in
 
@@ -165,7 +165,7 @@ Local run:
 docker run --rm -p 127.0.0.1:8080:8080 \
   -v "$HOME/.kube:/home/studio/.kube:ro" \
   -v studio-data:/data \
-  ghcr.io/avnish80/vks-migration-studio:0.21
+  ghcr.io/avnish80/vks-migration-studio:1.0.0-alpha.1
 ```
 
 On Windows the same command works in PowerShell with `$env:USERPROFILE\.kube`.
@@ -194,7 +194,7 @@ Phase 1 screens:
 3. **Pilot run monitor.** Live step progress (polling, server-sent events later), created objects with UIDs, rollout and smoke results, and inspect and cleanup actions.
 4. **Clusters.** Registered contexts, observed cluster UID, token status.
 
-The remaining v0.20 views (security, storage, routing, images, GitOps, acceptance, waves, handoff) keep working through the same planning core and move to the new UI in phase 2. During the transition the existing static UI stays available at `/classic`.
+The remaining v0.20 views (security, storage, routing, images, GitOps, acceptance, waves, handoff) move to the new UI in phase 2; their planning logic is already in the reused core. The old static UI is **not** shipped with the engine. v0.20 stays available as a tagged release for anyone who needs those views before phase 2.
 
 Design rules carried from the review:
 - the production-gate caveat lives in one status strip, not on every page;
@@ -206,7 +206,7 @@ Design rules carried from the review:
 ```
 /engine        TypeScript engine (Fastify, job runner, store, adapters)
 /ui            React + Vite UI
-/dist          existing browser modules, unchanged in phase 1; also served at /classic
+/dist          existing browser modules, reused by the engine; the old static UI is not served
 /runners       existing Python runners (moved from dist/ in a later step)
 /test          existing suites, plus engine unit and integration tests
 /deploy        Dockerfile; Helm chart in phase 2
@@ -228,16 +228,30 @@ Design rules carried from the review:
 
 | Milestone | Exit criteria |
 |---|---|
-| **1.0 Skeleton** | Container builds and runs; engine serves the classic UI at `/classic`; SQLite store with migrations; token auth; CI builds and signs the image |
+| **1.0 Skeleton** | Container builds and runs; engine serves an empty new UI shell; SQLite store with migrations; token auth; CI builds and signs the image |
 | **1.1 Inventory** | Register clusters; run collection as a job; snapshots stored and diffed; estate overview lists workloads with findings |
 | **1.2 Pilot (wrapped runners)** | Plan, validate, deploy, observe, inspect and cleanup run as jobs with evidence recorded directly; one active run per workload; run monitor screen; kind integration test passes |
 | **1.3 Hardening** | Engine restart mid-run recovers; token expiry pauses jobs; audit log complete; metrics; lab test on real VKS |
 | **1.4 Native adapter** | TypeScript Kubernetes adapter replaces the Python pilot runner inside the engine; same tests pass |
 
-## 8. Decisions needed
+## 8. Decisions
 
-1. **Runner port:** move to the native TypeScript adapter in milestone 1.4 as proposed, or keep the Python runners longer?
-2. **UI framework:** React is proposed for its ecosystem and hiring pool. An alternative is Lit web components, which are closer to the original Clarity approach. React is the recommendation.
-3. **Classic UI:** keep serving it at `/classic` through phase 1 (proposed), or drop it when the new screens land?
-4. **Version number:** call the engine release 0.21 to continue the current numbering, or reset to 1.0.0-alpha?
-5. **Data movement:** confirm Velero as the phase-3 mechanism for stateful workloads. Broadcom documents restoring VKS cluster workloads with Velero, so it fits existing customer practice.
+**Settled (16 Oct 2026)**
+
+1. **Runner port:** native TypeScript adapter in milestone 1.4.
+2. **UI framework:** React.
+3. **Classic UI:** not shipped with the engine. v0.20 stays available as a tagged release.
+4. **Versioning:** the engine starts at 1.0.0-alpha.
+
+**Open: 5. Data movement for stateful workloads (phase 3)**
+
+Proposal: no single mover. The engine defines a `DataMover` interface (prepare, pre-sync, quiesce, final sync, verify, rollback) and picks a mover per volume. This follows the methods in Broadcom's July 2026 migration papers for VKS, and adds what those papers say their example scripts leave out: persistent state, retries, concurrency control, rollback and finalizer recovery.
+
+| Mover | When | Notes |
+|---|---|---|
+| **FCD adoption** (zero copy) | Source is vSphere CSI on the same or a reachable vCenter (VKS to VKS, TKG to VKS) | Move the First Class Disk with vMotion and register it with `CnsRegisterVolume`. No data copy; RWO filesystem volumes only; versions must be validated |
+| **rsync (pv-migrate)** | Any filesystem PVC from any source platform | Pre-sync while the app runs, then a short final sync after quiesce. Needs TCP 22 from source to a temporary VKS LoadBalancer |
+| **Application-native replication** | Databases and queues (PostgreSQL, MySQL, Kafka, Redis) | Lowest downtime. The application owner runs replication; the engine checks lag and gates the cutover |
+| **Velero with Kopia data mover** | Networks where SSH cannot cross, or volumes the other movers cannot handle (check block-mode support for the Velero version used) | Copies through an S3 bucket; slower, but works where the others cannot |
+
+Kubernetes objects keep coming from the engine's own generated manifests, not from Velero object backups, so every object stays reviewable and digest-pinned.
