@@ -9,10 +9,11 @@ work=$(mktemp -d)
 exec > >(tee "$work/out.log") 2>&1
 annotate() {
   [ -n "${GITHUB_ACTIONS:-}" ] || return 0
-  # One short annotation per line: long multi-line annotations are dropped.
-  tail -25 "$work/out.log" | grep -v '^::' | cut -c1-300 | while IFS= read -r line; do printf '::error title=pilot-e2e::%s\n' "${line//%/%25}"; done
+  # GitHub keeps only 10 annotations per step and drops long ones: send a few short summaries.
+  printf '::error title=last output::%s\n' "$(grep -v '^::' "$work/out.log" | tail -6 | cut -c1-200 | tr '\n' '|' | sed 's/%/%25/g')"
+  grep -i '"level":[56]0\|error' "$work/engine.log" 2>/dev/null | grep -v '"req"' | tail -2 | cut -c1-400 | while IFS= read -r l; do printf '::error title=engine::%s\n' "${l//%/%25}"; done
   if [ -n "${run:-}" ]; then
-    api GET "/runs/$run" 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print("::error title=run::state=%s detail=%s" % (d["state"], (d.get("detail") or "")[:300])); [print("::error title=step::%s %s %s" % (s["step"], s["status"], json.dumps({k: v for k, v in s["summary"].items() if v})[:600])) for s in d["steps"]]' || true
+    api GET "/runs/$run" 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print("::error title=run::state=%s detail=%s" % (d["state"], (d.get("detail") or "")[:300])); [print("::error title=step::%s %s %s" % (s["step"], s["status"], json.dumps({k: v for k, v in s["summary"].items() if v and k in ("error","smoke","rollout","rows","actions")})[:500])) for s in d["steps"][-4:]]' || true
   fi
   return 0
 }
