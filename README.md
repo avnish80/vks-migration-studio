@@ -15,22 +15,22 @@ Use this when you can't run containers locally, or when the engine must reach cl
    ```bash
    scripts/collector-kubeconfig.sh my-source-context source.kubeconfig
    scripts/collector-kubeconfig.sh my-vks-context   target.kubeconfig
-   KUBECONFIG=source.kubeconfig:target.kubeconfig kubectl config view --flatten > studio.kubeconfig
+   (umask 077; KUBECONFIG=source.kubeconfig:target.kubeconfig kubectl config view --flatten > studio.kubeconfig)
    ```
-   The collector can list workloads, networking, storage, RBAC and policy objects. It cannot read Secrets or ConfigMaps or change anything. Its token does not expire like a `kubectl vsphere login` token, so keep the file private.
+   The collector can list exactly the kinds the inventory needs: workloads, networking, storage, RBAC and policy objects. It cannot read Secrets, ConfigMaps or Pods, or change anything. It can read Argo CD Applications and Flux HelmReleases, which may contain Helm values; the engine removes those values before storing anything. Its token does not expire like a `kubectl vsphere login` token, so keep these files private and delete them once the Secret below exists.
 3. **Deploy the engine** to any cluster that can reach those API servers:
    ```bash
    kubectl apply -f deploy/kubernetes/vks-migration-studio.yaml
    kubectl -n vks-migration-studio create secret generic studio-kubeconfig --from-file=config=studio.kubeconfig
-   kubectl -n vks-migration-studio rollout restart deploy/vks-migration-studio
    ```
-   It runs as one replica under the `restricted` pod security standard, with a 2 GiB volume for its database. Set `storageClassName` in the manifest if the cluster has no default storage class.
+   The engine picks up the kubeconfig Secret within about a minute, and again whenever you replace it.
+   It runs as one replica under the `restricted` pod security standard, with a 2 GiB volume for its database and up to 2 GiB of memory, enough for inventories of a few thousand workloads. Set `storageClassName` in the manifest if the cluster has no default storage class.
 4. **Open it:**
    ```bash
    kubectl -n vks-migration-studio port-forward svc/vks-migration-studio 8080:8080
-   kubectl -n vks-migration-studio logs deploy/vks-migration-studio | grep token=
+   kubectl -n vks-migration-studio exec deploy/vks-migration-studio -- cat /data/token
    ```
-   Open the printed link. Then go to **Clusters**, add your source and VKS target, create a project and collect.
+   Open http://127.0.0.1:8080 and paste the token. Then go to **Clusters**, add your source and VKS target, create a project and collect.
 
 ## Try it in your browser (GitHub Codespaces)
 

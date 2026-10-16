@@ -71,6 +71,20 @@ describe('project page', () => {
     expect(JSON.parse(String(calls.find(c => c.url === '/api/projects/p1/collect')!.init!.body))).toEqual({ side: 'source' });
   });
 
+  it('reports a collection that fails immediately', async () => {
+    window.history.replaceState(null, '', '/estate?project=p1');
+    let jobs: unknown[] = [];
+    mockApi({
+      ...base,
+      'GET /api/projects/p1/workloads': () => ({ status: 200, body: { snapshotId: null, findingsBySeverity: {}, estateFindings: 0, items: [] } }),
+      'GET /api/projects/p1/jobs': () => ({ status: 200, body: { items: jobs } }),
+      'POST /api/projects/p1/collect': () => { jobs = [{ id: 'j1', type: 'collect', state: 'Failed', progress: null, result: null, error: 'The cluster API server could not be reached from where the engine runs.', updatedAt: new Date(Date.now() + 1000).toISOString() }]; return { status: 202, body: { jobId: 'j1' } }; },
+    });
+    render(<App />);
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Collect inventory' }))[0]!);
+    expect((await screen.findByRole('alert')).textContent).toContain('could not be reached');
+  });
+
   it('lists workloads, filters them and opens findings', async () => {
     window.history.replaceState(null, '', '/estate?project=p1');
     mockApi({

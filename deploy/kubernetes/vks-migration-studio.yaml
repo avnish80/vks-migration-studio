@@ -1,6 +1,6 @@
 # VKS Migration Studio engine, one replica, for a VKS (or any Kubernetes) cluster.
 # Open it with:  kubectl -n vks-migration-studio port-forward svc/vks-migration-studio 8080:8080
-# Sign-in link: kubectl -n vks-migration-studio logs deploy/vks-migration-studio | grep token=
+# Sign-in token: kubectl -n vks-migration-studio exec deploy/vks-migration-studio -- cat /data/token
 # Clusters it should reach come from the optional Secret "studio-kubeconfig" (key: config).
 apiVersion: v1
 kind: Namespace
@@ -76,7 +76,7 @@ spec:
             periodSeconds: 30
           resources:
             requests: { cpu: 100m, memory: 256Mi }
-            limits: { cpu: "1", memory: 1Gi }
+            limits: { cpu: "2", memory: 2Gi }
           volumeMounts:
             - { name: data, mountPath: /data }
             - { name: tmp, mountPath: /tmp }

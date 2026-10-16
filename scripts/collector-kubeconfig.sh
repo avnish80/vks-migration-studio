@@ -14,6 +14,8 @@ name=vks-migration-studio-collector
 k() { kubectl --context "$ctx" "$@"; }
 
 [ -e "$out" ] && { echo "$out already exists; choose another file name." >&2; exit 1; }
+# The context name is written into the kubeconfig; keep it to characters that need no quoting.
+case "$ctx" in *[!A-Za-z0-9._@:/-]*|-*) echo "Context name '$ctx' has unusual characters; rename it with kubectl config rename-context first." >&2; exit 1;; esac
 
 k apply -f - <<YAML
 apiVersion: v1
@@ -36,12 +38,12 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata: { name: $name }
 rules:
-  # Read-only. Secrets and ConfigMaps are deliberately absent.
+    # Exactly what dist/collect.py reads. Secrets, ConfigMaps and Pods (plaintext env values) are absent.
   - apiGroups: [""]
-    resources: [namespaces, nodes, pods, services, serviceaccounts, persistentvolumeclaims, persistentvolumes, resourcequotas, limitranges]
+    resources: [namespaces, nodes, services, serviceaccounts, persistentvolumeclaims, persistentvolumes]
     verbs: [get, list]
   - apiGroups: [apps]
-    resources: [deployments, statefulsets, daemonsets, replicasets]
+    resources: [deployments, statefulsets, daemonsets]
     verbs: [get, list]
   - apiGroups: [batch]
     resources: [jobs, cronjobs]
@@ -67,33 +69,33 @@ rules:
   - apiGroups: [admissionregistration.k8s.io]
     resources: [validatingwebhookconfigurations, mutatingwebhookconfigurations, validatingadmissionpolicies, validatingadmissionpolicybindings]
     verbs: [get, list]
-  # Controller and policy types the collector records when the cluster has them.
-  - apiGroups:
-      - gateway.networking.k8s.io
-      - snapshot.storage.k8s.io
-      - policy.networking.k8s.io
-      - config.gatekeeper.sh
-      - syncset.gatekeeper.sh
-      - externaldata.gatekeeper.sh
-      - mutations.gatekeeper.sh
-      - templates.gatekeeper.sh
-      - constraints.gatekeeper.sh
-      - kyverno.io
-      - policies.kyverno.io
-      - k8s.cni.cncf.io
-      - argoproj.io
-      - helm.toolkit.fluxcd.io
-      - kustomize.toolkit.fluxcd.io
-      - external-secrets.io
-      - crd.antrea.io
-      - crd.projectcalico.org
-      - cilium.io
-      - security.istio.io
-      - keda.sh
-      - autoscaling.k8s.io
-      - projectcontour.io
-    resources: ["*"]
-    verbs: [get, list]
+  # Controller and policy types, recorded when the cluster has them.
+  - { apiGroups: [gateway.networking.k8s.io], resources: [gateways, gatewayclasses, httproutes, grpcroutes, tlsroutes, tcproutes, udproutes, referencegrants], verbs: [get, list] }
+  - { apiGroups: [snapshot.storage.k8s.io], resources: [volumesnapshotclasses], verbs: [get, list] }
+  - { apiGroups: [policy.networking.k8s.io], resources: [adminnetworkpolicies, baselineadminnetworkpolicies], verbs: [get, list] }
+  - { apiGroups: [config.gatekeeper.sh], resources: [configs], verbs: [get, list] }
+  - { apiGroups: [syncset.gatekeeper.sh], resources: [syncsets], verbs: [get, list] }
+  - { apiGroups: [externaldata.gatekeeper.sh], resources: [providers], verbs: [get, list] }
+  - { apiGroups: [mutations.gatekeeper.sh], resources: [assign, assignmetadata, assignimage, modifyset], verbs: [get, list] }
+  - { apiGroups: [templates.gatekeeper.sh], resources: [constrainttemplates], verbs: [get, list] }
+  # Gatekeeper constraint kinds are named by each template, so this group needs a wildcard; it holds policy parameters only.
+  - { apiGroups: [constraints.gatekeeper.sh], resources: ["*"], verbs: [get, list] }
+  - { apiGroups: [kyverno.io], resources: [clusterpolicies, policies], verbs: [get, list] }
+  - { apiGroups: [policies.kyverno.io], resources: [validatingpolicies, mutatingpolicies], verbs: [get, list] }
+  - { apiGroups: [k8s.cni.cncf.io], resources: [network-attachment-definitions], verbs: [get, list] }
+  # Argo CD Applications and Flux HelmReleases can carry Helm values; the collector removes them from
+  # what it stores, but this login can read them. Drop these two rules if that is not acceptable.
+  - { apiGroups: [argoproj.io], resources: [applications, applicationsets], verbs: [get, list] }
+  - { apiGroups: [helm.toolkit.fluxcd.io], resources: [helmreleases], verbs: [get, list] }
+  - { apiGroups: [kustomize.toolkit.fluxcd.io], resources: [kustomizations], verbs: [get, list] }
+  - { apiGroups: [external-secrets.io], resources: [externalsecrets, secretstores, clustersecretstores], verbs: [get, list] }
+  - { apiGroups: [crd.antrea.io], resources: [clusternetworkpolicies, networkpolicies], verbs: [get, list] }
+  - { apiGroups: [crd.projectcalico.org], resources: [globalnetworkpolicies, networkpolicies], verbs: [get, list] }
+  - { apiGroups: [cilium.io], resources: [ciliumnetworkpolicies, ciliumclusterwidenetworkpolicies], verbs: [get, list] }
+  - { apiGroups: [security.istio.io], resources: [authorizationpolicies, peerauthentications], verbs: [get, list] }
+  - { apiGroups: [keda.sh], resources: [scaledobjects], verbs: [get, list] }
+  - { apiGroups: [autoscaling.k8s.io], resources: [verticalpodautoscalers], verbs: [get, list] }
+  - { apiGroups: [projectcontour.io], resources: [httpproxies], verbs: [get, list] }
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

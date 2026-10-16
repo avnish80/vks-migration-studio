@@ -25,8 +25,8 @@ export function inventoryRoutes(app: FastifyInstance, db: DB, core: Core, config
       const value = request.body[key];
       if (value === undefined) continue;
       if (value !== null) {
-        const c = await db.selectFrom('clusters').select(['role']).where('id', '=', value).executeTakeFirst();
-        if (!c) return reply.code(400).send({ error: 'BadRequest', message: `No registered cluster with id ${value}.` });
+        const c = await db.selectFrom('clusters').select(['role', 'retired_at']).where('id', '=', value).executeTakeFirst();
+        if (!c || c.retired_at) return reply.code(400).send({ error: 'BadRequest', message: `No registered cluster with id ${value}.` });
         if (c.role !== role) return reply.code(400).send({ error: 'BadRequest', message: `That cluster is registered as a ${c.role}, not a ${role}.` });
       }
       update[column] = value;
@@ -55,7 +55,7 @@ export function inventoryRoutes(app: FastifyInstance, db: DB, core: Core, config
   /** Upload a collector or kubectl JSON export, for clusters the engine cannot reach. */
   app.post<{ Params: { id: string }; Body: { side: 'source' | 'target'; inventory: unknown } }>('/api/projects/:id/snapshots', {
     bodyLimit: 75 * 1024 * 1024,
-    schema: { body: { type: 'object', additionalProperties: false, required: ['side', 'inventory'], properties: { side, inventory: { type: ['object', 'array'] } } } },
+    schema: { body: { type: 'object', additionalProperties: false, required: ['side', 'inventory'], properties: { side, inventory: { anyOf: [{ type: 'object' }, { type: 'array' }] } } } },
   }, async (request, reply) => {
     const p = await project(request.params.id); if (!p) return notFound(reply);
     try { return reply.code(201).send(await storeSnapshot(db, core, { projectId: p.id, side: request.body.side, origin: 'imported', clusterId: null, raw: request.body.inventory })); }
@@ -72,8 +72,8 @@ export function inventoryRoutes(app: FastifyInstance, db: DB, core: Core, config
   app.get<{ Params: { id: string } }>('/api/projects/:id/snapshots', async (request, reply) => {
     const p = await project(request.params.id); if (!p) return notFound(reply);
     const rows = await db.selectFrom('snapshots as s').leftJoin('clusters as c', 'c.id', 's.cluster_id')
-      .select(['s.id', 's.side', 's.origin', 's.resource_count', 's.collected_at', 's.coverage', 'c.context_name']).where('s.project_id', '=', p.id).orderBy('s.collected_at', 'desc').limit(100).execute();
-    return { items: rows.map(r => ({ id: r.id, side: r.side, origin: r.origin, resources: r.resource_count, collectedAt: r.collected_at, context: r.context_name, coverage: JSON.parse(r.coverage) })) };
+      .select(['s.id', 's.side', 's.origin', 's.resource_count', 's.collected_at', 's.stored_at', 's.coverage', 'c.context_name']).where('s.project_id', '=', p.id).orderBy('s.stored_at', 'desc').orderBy('s.id', 'desc').limit(100).execute();
+    return { items: rows.map(r => ({ id: r.id, side: r.side, origin: r.origin, resources: r.resource_count, collectedAt: r.collected_at, storedAt: r.stored_at, context: r.context_name, coverage: JSON.parse(r.coverage) })) };
   });
 
   app.get<{ Params: { id: string; sid: string } }>('/api/projects/:id/snapshots/:sid/diff', async (request, reply) => {
@@ -85,7 +85,7 @@ export function inventoryRoutes(app: FastifyInstance, db: DB, core: Core, config
     const p = await project(request.params.id); if (!p) return notFound(reply);
     const rows = await db.selectFrom('workloads').selectAll().where('project_id', '=', p.id).orderBy('namespace').orderBy('kind').orderBy('name').execute();
     const latest = await latestAnalysis(db, p.id);
-    const estate = latest ? latest.analysis.findings.filter(f => !latest.analysis.workloads.includes(f.resource)) : [];
+    const estate = latest ? latest.analysis.findings.filter(f => !latest.analysis.workloadSet.has(f.resource)) : [];
     const sev: Record<string, number> = {};
     for (const f of latest?.analysis.findings ?? []) sev[f.severity] = (sev[f.severity] ?? 0) + 1;
     return {
@@ -111,7 +111,11 @@ export function inventoryRoutes(app: FastifyInstance, db: DB, core: Core, config
   app.get<{ Params: { id: string } }>('/api/projects/:id/findings', async (request, reply) => {
     const p = await project(request.params.id); if (!p) return notFound(reply);
     const latest = await latestAnalysis(db, p.id);
-    return { items: latest ? latest.analysis.findings.filter(f => !latest.analysis.workloads.includes(f.resource)) : [] };
+    const all = latest ? latest.analysis.findings.filter(f => !latest.analysis.workloadSet.has(f.resource)) : [];
+    // Bounded response: the most severe first, at most 500.
+    const order = ['Blocker', 'Review', 'Unknown', 'Info'];
+    const items = [...all].sort((a, b) => order.indexOf(a.severity) - order.indexOf(b.severity)).slice(0, 500);
+    return { snapshotId: latest?.snapshotId ?? null, total: all.length, items };
   });
 
   app.get<{ Params: { id: string } }>('/api/jobs/:id', async (request, reply) => {

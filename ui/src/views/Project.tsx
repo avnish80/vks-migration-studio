@@ -13,6 +13,8 @@ export function ProjectView({ id }: { id: string }) {
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [selected, setSelected] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  const applyJobsRef = useRef<(l: Job[]) => boolean>(l => { setJobs(l); return false; });
 
   const load = useCallback(async () => {
     try {
@@ -23,35 +25,52 @@ export function ProjectView({ id }: { id: string }) {
         api<{ items: Snapshot[] }>(`/api/projects/${id}/snapshots`),
         api<{ items: Job[] }>(`/api/projects/${id}/jobs`),
       ]);
-      setProject(p); setClusters(c.items); setWorkloads(w); setSnapshots(s.items); setJobs(j.items);
+      setProject(p); setClusters(c.items); setWorkloads(w); setSnapshots(s.items); applyJobsRef.current(j.items);
     } catch (e) { setError(e instanceof Error ? e.message : 'Could not load the project.'); }
   }, [id]);
   useEffect(() => { void load(); }, [load]);
 
-  // Poll while a job runs; reload everything when it finishes.
+  // Job tracking: report every job that finishes while this page is open, then reload the data.
+  const mounted = useRef(new Date().toISOString());
+  const known = useRef(new Map<string, string>());
+  const applyJobs = useCallback((list: Job[]) => {
+    let finished = false;
+    for (const j of list) {
+      const before = known.current.get(j.id);
+      known.current.set(j.id, j.state);
+      const terminal = j.state === 'Succeeded' || j.state === 'Failed';
+      if (!terminal || before === j.state || (before === undefined && j.updatedAt < mounted.current)) continue;
+      finished = true;
+      if (j.state === 'Failed') setError(j.error ?? 'The job failed.');
+      else setNotice('Inventory collected and analysed.');
+    }
+    setJobs(list);
+    return finished;
+  }, []);
+  applyJobsRef.current = applyJobs;
+  const polling = useRef(false);
   const active = jobs.filter(j => j.state === 'Queued' || j.state === 'Running');
   useEffect(() => {
     if (!active.length) return;
     const t = setInterval(async () => {
-      const j = (await api<{ items: Job[] }>(`/api/projects/${id}/jobs`).catch(() => null))?.items;
-      if (!j) return;
-      setJobs(j);
-      if (!j.some(x => x.state === 'Queued' || x.state === 'Running')) {
-        const last = j[0];
-        if (last?.state === 'Failed') setError(last.error ?? 'The job failed.');
-        else if (last?.state === 'Succeeded') setNotice('Inventory collected and analysed.');
-        void load();
-      }
-    }, 1000);
+      if (polling.current) return;   // never stack requests if the engine is slow
+      polling.current = true;
+      try {
+        const j = (await api<{ items: Job[] }>(`/api/projects/${id}/jobs`).catch(() => null))?.items;
+        if (j && applyJobs(j)) await load();
+      } finally { polling.current = false; }
+    }, 1500);
     return () => clearInterval(t);
-  }, [active.length, id, load]);
+  }, [active.length, id, load, applyJobs]);
 
   if (!project) return error ? <div className="alert error" role="alert">{error}</div> : <p aria-busy="true">Loading…</p>;
 
   const act = async (fn: () => Promise<unknown>, done?: string) => {
-    setError(undefined); setNotice(undefined);
+    if (busy) return;
+    setBusy(true); setError(undefined); setNotice(undefined);
     try { await fn(); if (done) setNotice(done); await load(); }
     catch (e) { setError(e instanceof Error ? e.message : 'Request failed.'); }
+    finally { setBusy(false); }
   };
   const setCluster = (side: Side, value: string) => act(() => api(`/api/projects/${id}/clusters`, { method: 'PATCH', body: JSON.stringify(side === 'source' ? { sourceClusterId: value || null } : { targetClusterId: value || null }) }));
   const collect = (side: Side) => act(() => api(`/api/projects/${id}/collect`, { method: 'POST', body: JSON.stringify({ side }) }));
@@ -87,8 +106,8 @@ export function ProjectView({ id }: { id: string }) {
               </select>
               {!options.length && <p className="hint">No {side} clusters registered. <a href="/clusters" onClick={e => { e.preventDefault(); navigate('/clusters'); }}>Register one</a>.</p>}
               <div className="actions">
-                <button className="btn" disabled={!chosen || !!running} onClick={() => void collect(side)}>Collect inventory</button>
-                <ImportButton onFile={f => void importFile(side, f)} />
+                <button className="btn" disabled={!chosen || running || busy} onClick={() => void collect(side)}>Collect inventory</button>
+                <ImportButton disabled={busy} onFile={f => void importFile(side, f)} />
               </div>
             </div>
           );
@@ -101,7 +120,7 @@ export function ProjectView({ id }: { id: string }) {
         <div className="card empty">
           <h3>No inventory yet</h3>
           <p>Collect from the source cluster, import an inventory file, or try the illustrative demo inventory.</p>
-          <button className="btn outline" onClick={() => void demo()}>Load demo inventory</button>
+          <button className="btn outline" disabled={busy} onClick={() => void demo()}>Load demo inventory</button>
         </div>
       )}
 
@@ -113,19 +132,19 @@ export function ProjectView({ id }: { id: string }) {
           <div className="tile"><div className="k">Estate-wide findings</div><div className="v">{workloads.estateFindings}</div></div>
         </div>
         <Workloads items={workloads.items} onOpen={setSelected} />
-        <EstateFindings projectId={id} />
+        <EstateFindings key={workloads.snapshotId ?? 'none'} projectId={id} />
       </>)}
 
-      {snapshots.length > 0 && <Snapshots projectId={id} items={snapshots} />}
+      {snapshots.length > 0 && <Snapshots key={snapshots[0]?.id} projectId={id} items={snapshots} />}
       {selected && <WorkloadPanel projectId={id} workloadId={selected} onClose={() => setSelected(undefined)} />}
     </>
   );
 }
 
-function ImportButton({ onFile }: { onFile: (f: File) => void }) {
+function ImportButton({ onFile, disabled }: { onFile: (f: File) => void; disabled: boolean }) {
   const input = useRef<HTMLInputElement>(null);
   return (<>
-    <button className="btn outline" type="button" onClick={() => input.current?.click()}>Import file</button>
+    <button className="btn outline" type="button" disabled={disabled} onClick={() => input.current?.click()}>Import file</button>
     <input ref={input} type="file" accept=".json,application/json" hidden onChange={e => { const f = e.target.files?.[0]; if (f) onFile(f); e.target.value = ''; }} />
   </>);
 }
@@ -148,7 +167,7 @@ function Workloads({ items, onOpen }: { items: Workload[]; onOpen: (id: string) 
       <table>
         <thead><tr><th>Namespace</th><th>Workload</th><th>Kind</th><th>State</th><th>Blockers</th><th>Review</th></tr></thead>
         <tbody>{shown.map(w => (
-          <tr key={w.id} className="clickable" tabIndex={0} onClick={() => onOpen(w.id)} onKeyDown={e => { if (e.key === 'Enter') onOpen(w.id); }}>
+          <tr key={w.id} className="clickable" tabIndex={0} aria-label={`Open ${w.namespace}/${w.name}`} onClick={() => onOpen(w.id)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(w.id); } }}>
             <td>{w.namespace}</td><td>{w.name}</td><td>{w.kind}</td>
             <td><span className={`badge state-${w.state}`}>{STATE_LABEL[w.state] ?? w.state}</span></td>
             <td>{w.blockers || ''}</td><td>{w.reviews || ''}</td>
@@ -177,12 +196,25 @@ function FindingList({ items }: { items: Finding[] }) {
 function WorkloadPanel({ projectId, workloadId, onClose }: { projectId: string; workloadId: string; onClose: () => void }) {
   const [detail, setDetail] = useState<WorkloadDetail>();
   const [error, setError] = useState<string>();
-  useEffect(() => { api<WorkloadDetail>(`/api/projects/${projectId}/workloads/${workloadId}`).then(setDetail, e => setError(e.message)); }, [projectId, workloadId]);
-  useEffect(() => { const k = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); }; window.addEventListener('keydown', k); return () => window.removeEventListener('keydown', k); }, [onClose]);
+  const close = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    let current = true;   // ignore responses for a workload that is no longer shown
+    setDetail(undefined); setError(undefined);
+    api<WorkloadDetail>(`/api/projects/${projectId}/workloads/${workloadId}`).then(d => { if (current) setDetail(d); }, e => { if (current) setError(e.message); });
+    return () => { current = false; };
+  }, [projectId, workloadId]);
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
+    close.current?.focus();
+    const k = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', k);
+    return () => { window.removeEventListener('keydown', k); previous?.focus?.(); };
+  }, [onClose]);
   return (
-    <aside className="panel" role="dialog" aria-label="Workload detail">
-      <div className="panel-head"><h3>{detail ? `${detail.namespace} / ${detail.name}` : 'Workload'}</h3><button className="link" onClick={onClose}>Close</button></div>
-      {error && <div className="alert error">{error}</div>}
+    <aside className="panel" role="dialog" aria-modal="true" aria-labelledby="panel-title">
+      <div className="panel-head"><h3 id="panel-title">{detail ? `${detail.namespace} / ${detail.name}` : 'Workload'}</h3><button ref={close} className="link" onClick={onClose}>Close</button></div>
+      {error && <div className="alert error" role="alert">{error}</div>}
+      {!detail && !error && <p aria-busy="true">Loading…</p>}
       {detail && (<>
         <p className="hint">{detail.kind} · {STATE_LABEL[detail.state] ?? detail.state}</p>
         <h3>Findings</h3>
@@ -198,19 +230,27 @@ function WorkloadPanel({ projectId, workloadId, onClose }: { projectId: string; 
 
 function EstateFindings({ projectId }: { projectId: string }) {
   const [items, setItems] = useState<Finding[]>();
+  const [total, setTotal] = useState(0);
+  const [failed, setFailed] = useState(false);
   const [open, setOpen] = useState(false);
-  useEffect(() => { if (open && !items) api<{ items: Finding[] }>(`/api/projects/${projectId}/findings`).then(r => setItems(r.items), () => setItems([])); }, [open, items, projectId]);
+  useEffect(() => { if (open && !items && !failed) api<{ items: Finding[]; total: number }>(`/api/projects/${projectId}/findings`).then(r => { setItems(r.items); setTotal(r.total); }, () => setFailed(true)); }, [open, items, failed, projectId]);
   return (
     <details className="card" onToggle={e => setOpen((e.target as HTMLDetailsElement).open)}>
       <summary><strong>Estate-wide findings</strong> <span className="hint">target compatibility, cluster-scoped resources and controllers</span></summary>
-      {items ? <FindingList items={items} /> : open && <p aria-busy="true">Loading…</p>}
+      {failed && <div className="alert error" role="alert">Could not load the findings.</div>}
+      {items ? <>{total > items.length && <p className="hint">Showing the {items.length} most severe of {total}.</p>}<FindingList items={items} /></> : open && !failed && <p aria-busy="true">Loading…</p>}
     </details>
   );
 }
 
 function Snapshots({ projectId, items }: { projectId: string; items: Snapshot[] }) {
   const [diff, setDiff] = useState<Diff & { forId: string }>();
-  const show = async (s: Snapshot) => setDiff({ ...(await api<Diff>(`/api/projects/${projectId}/snapshots/${s.id}/diff`)), forId: s.id });
+  const [error, setError] = useState<string>();
+  const show = async (s: Snapshot) => {
+    setError(undefined);
+    try { setDiff({ ...(await api<Diff>(`/api/projects/${projectId}/snapshots/${s.id}/diff`)), forId: s.id }); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Could not compare snapshots.'); }
+  };
   return (
     <section>
       <h3>Inventory snapshots</h3>
@@ -218,7 +258,7 @@ function Snapshots({ projectId, items }: { projectId: string; items: Snapshot[] 
         <thead><tr><th>Collected</th><th>Side</th><th>From</th><th>Resources</th><th>Coverage</th><th /></tr></thead>
         <tbody>{items.map(s => (
           <tr key={s.id}>
-            <td>{new Date(s.collectedAt).toLocaleString()}</td><td>{s.side}</td>
+            <td title={`Stored ${new Date(s.storedAt).toLocaleString()}`}>{new Date(s.collectedAt).toLocaleString()}</td><td>{s.side}</td>
             <td>{s.origin === 'collected' ? s.context : s.origin === 'demo' ? 'Demo inventory' : 'Imported file'}</td>
             <td>{s.resources}</td>
             <td>{s.coverage.errors.length ? <span title={s.coverage.errors.map(e => `${e.resource}: ${e.reason}`).join('\n')}>{s.coverage.errors.length} kinds not readable</span> : s.origin === 'collected' ? 'All queried kinds read' : '—'}</td>
@@ -226,6 +266,7 @@ function Snapshots({ projectId, items }: { projectId: string; items: Snapshot[] 
           </tr>
         ))}</tbody>
       </table>
+      {error && <div className="alert error" role="alert">{error}</div>}
       {diff && (
         <div className="card">
           <h3>Changes {diff.previousId ? 'since the previous snapshot' : '(first snapshot on this side)'}</h3>

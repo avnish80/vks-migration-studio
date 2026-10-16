@@ -25,6 +25,7 @@ if (args.includes('api-versions')) { process.stdout.write('v1\napps/v1\n'); proc
 const g = args.indexOf('get');
 const kind = g >= 0 ? args[g + 1] : '';
 if (kind === 'namespace' && args[g + 2] === 'kube-system') out({ apiVersion: 'v1', kind: 'Namespace', metadata: { name: 'kube-system', uid } });
+if (kind === 'namespaces' && fs.existsSync(path.join(dir, 'hide-namespaces'))) fail('Error from server (Forbidden): namespaces is forbidden');
 if (kind === 'namespaces') out({ items: [{ apiVersion: 'v1', kind: 'Namespace', metadata: { name: 'kube-system', uid } }, { apiVersion: 'v1', kind: 'Namespace', metadata: { name: 'app', uid: 'ns-app' } }] });
 if (kind === 'deployments' && ctx === 'lab-source') out({ items: [{ apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name: 'web', namespace: 'app', uid: 'd1' }, spec: { replicas: 2, selector: { matchLabels: { app: 'web' } }, template: { metadata: { labels: { app: 'web' } }, spec: { hostNetwork: true, containers: [{ name: 'web', image: 'nginx:1.27', env: [{ name: 'PASSWORD', value: 'ENV_SECRET_VALUE' }] }] } } } }] });
 if (kind === 'services' && ctx === 'lab-source') out({ items: [{ apiVersion: 'v1', kind: 'Service', metadata: { name: 'web', namespace: 'app', uid: 's1' }, spec: { selector: { app: 'web' }, ports: [{ port: 80 }] } }] });

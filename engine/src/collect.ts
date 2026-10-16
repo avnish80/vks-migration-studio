@@ -19,7 +19,10 @@ export function collectHandler(db: DB, core: Core, config: Config): JobHandler {
     async run({ payload, progress }) {
       const { projectId, side, clusterId } = payload as CollectPayload;
       const cluster = await db.selectFrom('clusters').selectAll().where('id', '=', clusterId).executeTakeFirst();
-      if (!cluster) throw new JobFailure('The cluster is no longer registered.');
+      if (!cluster || cluster.retired_at) throw new JobFailure('The cluster is no longer registered.');
+      // The project may have been pointed at another cluster while this job waited.
+      const project = await db.selectFrom('projects').select(['source_cluster_id', 'target_cluster_id']).where('id', '=', projectId).executeTakeFirst();
+      if (!project || (side === 'source' ? project.source_cluster_id : project.target_cluster_id) !== clusterId) throw new JobFailure(`The project's ${side} cluster changed after this collection was requested. Start it again.`);
 
       await progress('Checking cluster identity');
       let uid: string;
@@ -35,7 +38,8 @@ export function collectHandler(db: DB, core: Core, config: Config): JobHandler {
       const raw = await runCollector(config, cluster.context_name);
       // Bind the snapshot to the cluster we checked, not to whatever the context points at now.
       const collectedUid = inventoryClusterUid(raw as never);
-      if (collectedUid && collectedUid !== uid) throw new JobFailure('The cluster changed during collection. Run the collection again.');
+      if (!collectedUid) throw new JobFailure('The collection could not read the kube-system namespace, so it cannot be tied to this cluster. Check that the kubeconfig user can list namespaces.');
+      if (collectedUid !== uid) throw new JobFailure('The cluster changed during collection. Run the collection again.');
 
       await progress('Analysing inventory');
       try {

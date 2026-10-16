@@ -4,7 +4,7 @@ import { addUnsavedGuard, navigate } from '../router';
 import { ProjectView } from './Project';
 
 export function Estate({ projectId }: { projectId: string | null }) {
-  if (projectId) return <ProjectView id={projectId} />;
+  if (projectId) return <ProjectView key={projectId} id={projectId} />;
   return <ProjectList />;
 }
 

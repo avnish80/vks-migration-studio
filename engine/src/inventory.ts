@@ -33,26 +33,35 @@ function coverageOf(raw: Inventory) {
 
 export interface StoreInput { projectId: string; side: 'source' | 'target'; origin: 'collected' | 'imported' | 'demo'; clusterId: string | null; raw: unknown }
 
-/**
- * Validates and stores an inventory snapshot. Source snapshots are analysed with the reused planning
- * core, and the project's workload list is refreshed from the result.
- */
-export async function storeSnapshot(db: DB, c: Core, input: StoreInput): Promise<{ id: string; resources: number; workloads: number }> {
-  const raw = input.raw as Inventory;
-  try { core(c).changes.prepare(raw); } catch (e) { throw new InventoryError(`Not a valid inventory: ${e instanceof Error ? e.message : 'unreadable'}`); }
-  if (!raw.items.length) throw new InventoryError('The inventory contains no resources.');
-  const analysis = input.side === 'source' ? core(c).engine.analyze(raw, {}) : null;
-  const now = new Date().toISOString(), id = crypto.randomUUID();
-  const blob = await putBlob(db, raw);
-  const analysisHash = analysis ? await putBlob(db, analysis) : null;
-  await db.transaction().execute(async trx => {
-    await trx.insertInto('snapshots').values({ id, project_id: input.projectId, side: input.side, origin: input.origin, cluster_id: input.clusterId, blob_hash: blob, analysis_hash: analysisHash, resource_count: raw.items.length, collected_at: raw.collection?.collectedAt && !Number.isNaN(Date.parse(raw.collection.collectedAt)) ? new Date(raw.collection.collectedAt).toISOString() : now, coverage: JSON.stringify(coverageOf(raw)) }).execute();
-    if (analysis) await refreshWorkloads(trx as unknown as DB, input.projectId, id, analysis, now);
-    await record(trx as unknown as DB, 'inventory.store', `project/${input.projectId}`, { snapshot: id, side: input.side, origin: input.origin, resources: raw.items.length });
-  });
-  return { id, resources: raw.items.length, workloads: analysis?.workloads.length ?? 0 };
+/** The inventory's own collection time, if plausible; otherwise now. Used for display only. */
+function reportedTime(value: unknown, now: Date): string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T/.test(value)) return now.toISOString();
+  const t = Date.parse(value);
+  if (Number.isNaN(t) || t > now.getTime() + 5 * 60_000 || t < Date.UTC(2014, 0, 1)) return now.toISOString();
+  return new Date(t).toISOString();
 }
 
+/**
+ * Validates, sanitises and stores an inventory snapshot. Only the sanitised form produced by the
+ * planning core is kept: Secret and ConfigMap data, env values, last-applied annotations and GitOps
+ * values are removed even when an imported file contains them. Source snapshots are analysed, and
+ * the project's workloads refreshed: the newest stored snapshot is always the one that counts.
+ */
+export async function storeSnapshot(db: DB, c: Core, input: StoreInput): Promise<{ id: string; resources: number; workloads: number }> {
+  let inv: Inventory;
+  try { inv = core(c).changes.prepare(input.raw) as Inventory; } catch (e) { throw new InventoryError(`Not a valid inventory: ${e instanceof Error ? e.message : 'unreadable'}`); }
+  if (!inv.items.length) throw new InventoryError('The inventory contains no resources.');
+  const analysis = input.side === 'source' ? core(c).engine.analyze(inv, {}) : null;
+  const now = new Date(), id = crypto.randomUUID();
+  const blob = await putBlob(db, inv);
+  const analysisHash = analysis ? await putBlob(db, analysis) : null;
+  await db.transaction().execute(async trx => {
+    await trx.insertInto('snapshots').values({ id, project_id: input.projectId, side: input.side, origin: input.origin, cluster_id: input.clusterId, blob_hash: blob, analysis_hash: analysisHash, resource_count: inv.items.length, collected_at: reportedTime(inv.collection?.collectedAt, now), stored_at: now.toISOString(), coverage: JSON.stringify(coverageOf(inv)) }).execute();
+    if (analysis) await refreshWorkloads(trx as unknown as DB, input.projectId, id, analysis, now.toISOString());
+    await record(trx as unknown as DB, 'inventory.store', `project/${input.projectId}`, { snapshot: id, side: input.side, origin: input.origin, resources: inv.items.length });
+  });
+  return { id, resources: inv.items.length, workloads: analysis?.workloads.length ?? 0 };
+}
 async function refreshWorkloads(db: DB, projectId: string, snapshotId: string, analysis: Analysis, now: string): Promise<void> {
   const counts = new Map<string, { blockers: number; reviews: number }>();
   for (const f of analysis.findings) {
@@ -85,15 +94,24 @@ export async function diffSnapshot(db: DB, c: Core, projectId: string, snapshotI
   const current = await db.selectFrom('snapshots').selectAll().where('id', '=', snapshotId).where('project_id', '=', projectId).executeTakeFirst();
   if (!current) return undefined;
   const previous = await db.selectFrom('snapshots').selectAll().where('project_id', '=', projectId).where('side', '=', current.side)
-    .where(eb => eb.or([eb('collected_at', '<', current.collected_at), eb.and([eb('collected_at', '=', current.collected_at), eb('id', '<', current.id)])]))
-    .orderBy('collected_at', 'desc').orderBy('id', 'desc').limit(1).executeTakeFirst();
+    .where(eb => eb.or([eb('stored_at', '<', current.stored_at), eb.and([eb('stored_at', '=', current.stored_at), eb('id', '<', current.id)])]))
+    .orderBy('stored_at', 'desc').orderBy('id', 'desc').limit(1).executeTakeFirst();
   const after = await getBlob(db, current.blob_hash), before = previous ? await getBlob(db, previous.blob_hash) : null;
   const result = core(c).changes.compare(before, after, current.side);
   return { snapshotId, previousId: previous?.id ?? null, counts: result.counts, rows: result.rows.slice(0, 500).map(r => ({ id: r.id, change: r.change })), truncated: result.rows.length > 500 };
 }
 
-export async function latestAnalysis(db: DB, projectId: string): Promise<{ snapshotId: string; analysis: Analysis } | undefined> {
-  const s = await db.selectFrom('snapshots').select(['id', 'analysis_hash']).where('project_id', '=', projectId).where('side', '=', 'source').where('analysis_hash', 'is not', null).orderBy('collected_at', 'desc').orderBy('id', 'desc').limit(1).executeTakeFirst();
+// Parsed analyses are large; keep the last few in memory instead of re-reading them on every request.
+const cache = new Map<string, Analysis & { workloadSet: Set<string> }>();
+export async function latestAnalysis(db: DB, projectId: string): Promise<{ snapshotId: string; analysis: Analysis & { workloadSet: Set<string> } } | undefined> {
+  const s = await db.selectFrom('snapshots').select(['id', 'analysis_hash']).where('project_id', '=', projectId).where('side', '=', 'source').where('analysis_hash', 'is not', null).orderBy('stored_at', 'desc').orderBy('id', 'desc').limit(1).executeTakeFirst();
   if (!s?.analysis_hash) return undefined;
-  return { snapshotId: s.id, analysis: await getBlob<Analysis>(db, s.analysis_hash) };
+  let analysis = cache.get(s.analysis_hash);
+  if (!analysis) {
+    const parsed = await getBlob<Analysis>(db, s.analysis_hash);
+    analysis = { ...parsed, workloadSet: new Set(parsed.workloads) };
+    cache.set(s.analysis_hash, analysis);
+    while (cache.size > 4) cache.delete(cache.keys().next().value as string);
+  }
+  return { snapshotId: s.id, analysis };
 }

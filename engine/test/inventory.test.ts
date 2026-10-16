@@ -10,6 +10,7 @@ import type { DB } from '../src/db/index.js';
 import { openDatabase, migrate } from '../src/db/index.js';
 import { provider } from '../src/db/migrations.js';
 import { JobFailure, JobRunner } from '../src/jobs.js';
+import { sql } from 'kysely';
 
 const FAKE = path.resolve('test/fixtures/fake-kubectl.cjs');
 let app: FastifyInstance; let db: DB; let kubeDir: string; let saved: NodeJS.ProcessEnv;
@@ -201,6 +202,107 @@ describe('migrations', () => {
     expect(await migrate(db1)).toEqual(['002_inventory']);
     const s = await db1.selectFrom('snapshots').selectAll().executeTakeFirstOrThrow();
     expect(s).toMatchObject({ id: 's', side: 'target', origin: 'collected', cluster_id: 'c' });
+    await db1.destroy();
+  });
+});
+
+describe('review fixes', () => {
+  it('stores imports sanitised: no Secret data, env values or last-applied annotations', async () => {
+    await setup();
+    const pid = await project();
+    const inventory = { kind: 'List', sourceVersion: 'v1.30', collection: {}, items: [
+      { apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name: 'web', namespace: 'app', annotations: { 'kubectl.kubernetes.io/last-applied-configuration': 'LAST_APPLIED_SECRET' } }, spec: { selector: { matchLabels: { a: 'b' } }, template: { metadata: { labels: { a: 'b' } }, spec: { containers: [{ name: 'c', image: 'x', env: [{ name: 'P', value: 'PLAINTEXT_ENV_SECRET' }] }] } } } },
+      { apiVersion: 'v1', kind: 'Secret', metadata: { name: 's', namespace: 'app' }, data: { password: 'U0VDUkVUX0RBVEE=' }, stringData: { token: 'STRING_DATA_SECRET' } },
+      { apiVersion: 'helm.toolkit.fluxcd.io/v2', kind: 'HelmRelease', metadata: { name: 'h', namespace: 'app' }, spec: { values: { pw: 'HELM_VALUES_SECRET' } } }] };
+    expect((await call('POST', `/api/projects/${pid}/snapshots`, { side: 'source', inventory })).statusCode).toBe(201);
+    const stored = (await db.selectFrom('blobs').select('compressed').execute()).map(b => zlib.gunzipSync(b.compressed).toString()).join();
+    for (const secret of ['LAST_APPLIED_SECRET', 'PLAINTEXT_ENV_SECRET', 'U0VDUkVUX0RBVEE=', 'STRING_DATA_SECRET', 'HELM_VALUES_SECRET']) expect(stored, secret).not.toContain(secret);
+  });
+
+  it('accepts a bare array or nested Lists and counts the real resources', async () => {
+    await setup();
+    const pid = await project();
+    const d = (name: string) => ({ apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name, namespace: 'app' }, spec: { selector: { matchLabels: { a: name } }, template: { metadata: { labels: { a: name } }, spec: { containers: [{ name: 'c', image: 'x' }] } } } });
+    const res = await call('POST', `/api/projects/${pid}/snapshots`, { side: 'source', inventory: [{ kind: 'DeploymentList', items: [d('a'), d('b')] }, d('c')] });
+    expect(res.statusCode, res.body).toBe(201);
+    expect(res.json().resources).toBe(3);
+  });
+
+  it('the newest stored snapshot is the latest, whatever time the file claims', async () => {
+    await setup();
+    const pid = await project();
+    const demo = JSON.parse(fs.readFileSync(path.resolve('../dist/demo.json'), 'utf8'));
+    await call('POST', `/api/projects/${pid}/snapshots`, { side: 'source', inventory: { ...demo, collection: { collectedAt: '2099-01-01T00:00:00Z' } } });
+    const old = { ...demo, items: demo.items.filter((r: { kind: string; metadata: { name: string } }) => r.metadata.name !== 'inference'), collection: { collectedAt: '2020-01-01T00:00:00Z' } };
+    const second = (await call('POST', `/api/projects/${pid}/snapshots`, { side: 'source', inventory: old })).json().id;
+    const list = (await call('GET', `/api/projects/${pid}/workloads`)).json();
+    expect(list.snapshotId).toBe(second);
+    expect(list.items.find((w: { resource: string }) => w.resource === 'analytics/Deployment/inference').state).toBe('NotInLatestSnapshot');
+    const snaps = (await call('GET', `/api/projects/${pid}/snapshots`)).json().items;
+    expect(snaps[0].id).toBe(second);
+    expect(snaps[1].collectedAt.startsWith('2099')).toBe(false);   // implausible future time replaced
+  });
+
+  it('retires a cluster that has snapshots so its context can be registered again', async () => {
+    await setup();
+    const pid = await project();
+    const src = (await register('lab-source', 'source')).json().id;
+    await call('PATCH', `/api/projects/${pid}/clusters`, { sourceClusterId: src });
+    expect((await waitForJob((await call('POST', `/api/projects/${pid}/collect`, { side: 'source' })).json().jobId)).state).toBe('Succeeded');
+    fs.writeFileSync(path.join(kubeDir, 'lab-source.uid'), '99999999-9999-9999-9999-999999999999');   // cluster rebuilt
+    expect((await call('DELETE', `/api/clusters/${src}`)).statusCode).toBe(204);
+    expect((await call('GET', `/api/projects/${pid}`)).json().sourceClusterId).toBeNull();
+    const again = await register('lab-source', 'source');
+    expect(again.statusCode).toBe(201);
+    expect(again.json().clusterUid).toBe('99999999-9999-9999-9999-999999999999');
+    expect((await call('GET', '/api/clusters')).json().items).toHaveLength(1);
+    expect((await call('GET', `/api/projects/${pid}/snapshots`)).json().items[0].context).toMatch(/^lab-source#retired-/);
+  });
+
+  it('does not store a collection that cannot be tied to the cluster', async () => {
+    await setup();
+    const pid = await project();
+    const src = (await register('lab-source', 'source')).json().id;
+    await call('PATCH', `/api/projects/${pid}/clusters`, { sourceClusterId: src });
+    fs.writeFileSync(path.join(kubeDir, 'hide-namespaces'), '1');
+    const job = await waitForJob((await call('POST', `/api/projects/${pid}/collect`, { side: 'source' })).json().jobId);
+    expect(job.state).toBe('Failed');
+    expect(job.error).toContain('kube-system');
+  });
+
+  it('reads a colon-separated KUBECONFIG', async () => {
+    const extra = path.join(kubeDir, 'missing-first');
+    process.env.KUBECONFIG = `${extra}${path.delimiter}${path.join(kubeDir, 'config')}`;
+    await setup();
+    expect((await call('GET', '/api/kube/contexts')).statusCode).toBe(200);
+  });
+});
+
+describe('migration 002', () => {
+  it('is atomic and handles duplicate context names from 1.0', async () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'studio-mig2-')), 'studio.db');
+    const db1 = openDatabase(file);
+    await new Migrator({ db: db1, provider }).migrateTo('001_initial');
+    const now = new Date().toISOString();
+    for (const id of ['c1', 'c2']) await (db1 as any).insertInto('clusters').values({ id, context_name: 'same', role: 'source', observed_uid: id, last_seen_at: null, created_at: now }).execute();
+    expect(await migrate(db1)).toEqual(['002_inventory']);
+    const rows = await db1.selectFrom('clusters').select(['id', 'context_name', 'retired_at']).orderBy('id').execute();
+    expect(rows[0]).toMatchObject({ id: 'c1', context_name: 'same', retired_at: null });
+    expect(rows[1]!.context_name).toMatch(/^same#retired-/);
+    await db1.destroy();
+  });
+
+  it('leaves the 1.0 schema intact if the step fails', async () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'studio-mig3-')), 'studio.db');
+    const db1 = openDatabase(file);
+    await new Migrator({ db: db1, provider }).migrateTo('001_initial');
+    await sql`create table jobs_progress_blocker (x)`.execute(db1);
+    await sql`alter table jobs add column progress text`.execute(db1);   // makes 002 fail late
+    await expect(migrate(db1)).rejects.toThrow();
+    const cols = (await sql<{ name: string }>`pragma table_info(clusters)`.execute(db1)).rows.map(r => r.name);
+    expect(cols).not.toContain('name');   // earlier changes rolled back
+    await sql`alter table jobs drop column progress`.execute(db1);
+    expect(await migrate(db1)).toEqual(['002_inventory']);   // and the step can be retried
     await db1.destroy();
   });
 });

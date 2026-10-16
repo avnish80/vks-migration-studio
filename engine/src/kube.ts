@@ -47,12 +47,17 @@ export function validContextName(name: unknown): name is string {
  * a private temporary folder, so kubectl's discovery cache works on a read-only filesystem.
  */
 export function kubeEnv(config: Config): NodeJS.ProcessEnv {
-  const home = path.join(os.tmpdir(), 'studio-kube-home');
-  fs.mkdirSync(home, { recursive: true, mode: 0o700 });
-  const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: home, KUBECONFIG: config.kubeconfig, LANG: 'C.UTF-8' };
-  // Proxy settings and CA bundles the operator configured still apply.
-  for (const k of ['HTTPS_PROXY', 'https_proxy', 'NO_PROXY', 'no_proxy', 'SSL_CERT_FILE']) if (process.env[k]) env[k] = process.env[k];
-  return env;
+  const cache = path.join(os.tmpdir(), 'studio-kube-cache');
+  fs.mkdirSync(cache, { recursive: true, mode: 0o700 });
+  // The operator's environment is kept (exec credential plugins for EKS, GKE and AKS need HOME and
+  // their cloud variables). Only the kubeconfig and the discovery cache location are set explicitly.
+  const { STUDIO_TOKEN: _token, ...env } = process.env;   // never hand the engine's own token to child processes
+  return { ...env, KUBECONFIG: config.kubeconfig, KUBECACHEDIR: cache };
+}
+
+/** True if any file in a (possibly colon-separated) KUBECONFIG exists. */
+export function kubeconfigPresent(value: string): boolean {
+  return value.split(path.delimiter).some(f => f && fs.existsSync(f));
 }
 
 export function kubectl(config: Config, args: string[], timeoutMs = 30_000): Promise<string> {
@@ -62,7 +67,7 @@ export function kubectl(config: Config, args: string[], timeoutMs = 30_000): Pro
       const e = error as NodeJS.ErrnoException & { killed?: boolean };
       if (e.code === 'ENOENT') return reject(failure('NoKubectl'));
       if (e.killed) return reject(failure('Timeout'));
-      if (!fs.existsSync(config.kubeconfig) && /config|context/i.test(stderr)) return reject(failure('NoKubeconfig'));
+      if (!kubeconfigPresent(config.kubeconfig) && /config|context/i.test(stderr)) return reject(failure('NoKubeconfig'));
       reject(failure(classify(String(stderr))));
     });
   });
@@ -72,7 +77,7 @@ export interface KubeContext { name: string; cluster: string; server: string; na
 
 /** Contexts from the kubeconfig. kubectl redacts credentials unless --raw is given, and we never pass it. */
 export async function listContexts(config: Config): Promise<KubeContext[]> {
-  if (!fs.existsSync(config.kubeconfig)) throw failure('NoKubeconfig');
+  if (!kubeconfigPresent(config.kubeconfig)) throw failure('NoKubeconfig');
   const view = JSON.parse(await kubectl(config, ['config', 'view', '-o', 'json'])) as {
     'current-context'?: string;
     contexts?: { name: string; context?: { cluster?: string; namespace?: string } }[];

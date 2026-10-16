@@ -50,7 +50,7 @@ export interface Workload { id: string; resource: string; kind: string; namespac
 export interface WorkloadList { snapshotId: string | null; findingsBySeverity: Record<string, number>; estateFindings: number; items: Workload[] }
 export interface Finding { id: string; resource: string; severity: string; category: string; title: string; evidence: string; action: string; validation: string }
 export interface WorkloadDetail extends Omit<Workload, 'blockers' | 'reviews' | 'updatedAt'> { findings: Finding[]; edges: { from: string; to: string; type: string }[] }
-export interface Snapshot { id: string; side: Side; origin: 'collected' | 'imported' | 'demo'; resources: number; collectedAt: string; context: string | null; coverage: { complete: boolean; queried: number; errors: { resource: string; reason: string }[] } }
+export interface Snapshot { id: string; side: Side; origin: 'collected' | 'imported' | 'demo'; resources: number; collectedAt: string; storedAt: string; context: string | null; coverage: { complete: boolean; queried: number; errors: { resource: string; reason: string }[] } }
 export interface Diff { snapshotId: string; previousId: string | null; counts: Record<string, number>; rows: { id: string; change: string }[]; truncated: boolean }
 export interface AuditEntry { seq: number; at: string; actor: string; action: string; subject: string; detail: Record<string, unknown> }
 export interface Version { version: string; coreModules: string[] }

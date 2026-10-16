@@ -44,6 +44,7 @@ export class JobRunner {
   /** Runs queued jobs until none are left. Tests call this directly. */
   async drain(): Promise<void> { while (await this.runOne()); }
 
+
   private kick(): void {
     if (this.busy || this.stopped) return;
     this.busy = true;
@@ -64,8 +65,8 @@ export class JobRunner {
       }
       const next = await trx.selectFrom('jobs').select(['id', 'type', 'payload', 'attempts']).where('state', '=', 'Queued').orderBy('created_at').limit(1).executeTakeFirst();
       if (!next) return undefined;
-      await trx.updateTable('jobs').set({ state: 'Running', attempts: next.attempts + 1, lease_owner: this.owner, lease_until: new Date(now.getTime() + LEASE_MS).toISOString(), updated_at: now.toISOString() }).where('id', '=', next.id).where('state', '=', 'Queued').execute();
-      return next;
+      const claimed = await trx.updateTable('jobs').set({ state: 'Running', attempts: next.attempts + 1, lease_owner: this.owner, lease_until: new Date(now.getTime() + LEASE_MS).toISOString(), updated_at: now.toISOString() }).where('id', '=', next.id).where('state', '=', 'Queued').executeTakeFirst();
+      return claimed.numUpdatedRows === 1n ? next : undefined;
     });
   }
 
@@ -75,7 +76,8 @@ export class JobRunner {
     if (!job) return false;
     const handler = this.handlers[job.type]!;
     const heartbeat = setInterval(() => {
-      void this.db.updateTable('jobs').set({ lease_until: new Date(Date.now() + LEASE_MS).toISOString() }).where('id', '=', job.id).where('lease_owner', '=', this.owner).execute();
+      this.db.updateTable('jobs').set({ lease_until: new Date(Date.now() + LEASE_MS).toISOString() }).where('id', '=', job.id).where('lease_owner', '=', this.owner).execute()
+        .catch(error => console.error('Job heartbeat failed', error));
     }, LEASE_MS / 3);
     try {
       const result = await handler.run({
