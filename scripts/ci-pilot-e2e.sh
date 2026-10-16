@@ -4,6 +4,17 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 work=$(mktemp -d)
+# Keep a copy of all output; on failure, surface the end of it (and the engine log) as GitHub
+# annotations, since job logs are not always readable where the failure is diagnosed.
+exec > >(tee "$work/out.log") 2>&1
+annotate() {
+  [ -n "${GITHUB_ACTIONS:-}" ] || return 0
+  esc() { sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g'; }
+  printf '::error title=pilot-e2e output::%s\n' "$(tail -40 "$work/out.log" | esc)"
+  [ -f "$work/engine.log" ] && printf '::error title=pilot-e2e engine log::%s\n' "$(grep -v '"req"' "$work/engine.log" | tail -30 | esc)"
+  return 0
+}
+trap 'status=$?; [ $status -ne 0 ] && annotate; exit $status' EXIT
 TOKEN=$(printf 'e%.0s' $(seq 1 40)); A="Authorization: Bearer $TOKEN"; J='content-type: application/json'; U=http://127.0.0.1:18090/api
 py() { python3 -c "import json,sys; d=json.load(sys.stdin); $1"; }
 api() { local method=$1 path=$2; shift 2; curl -fsS -X "$method" -H "$A" -H "$J" "$U$path" "$@"; }
@@ -35,7 +46,6 @@ scripts/pilot-kubeconfig.sh kind-target app "$work/pilot.kc"
 
 echo "== Engine"
 KUBECONFIG="$work/studio.kc" STUDIO_DATA_DIR="$work/data" STUDIO_PORT=18090 STUDIO_TOKEN="$TOKEN" node engine/build/server.js > "$work/engine.log" 2>&1 &
-trap 'echo "--- engine log"; tail -50 "$work/engine.log"' EXIT
 for _ in $(seq 1 30); do curl -fsS $U/health >/dev/null 2>&1 && break; sleep 1; done
 
 src=$(api POST /clusters -d '{"contextName":"kind-source","role":"source"}' | py 'print(d["id"])')
@@ -76,5 +86,4 @@ echo "final state: $state"
 [ "$state" = Cleaned ] || [ "$state" = Absent ] || { api GET "/runs/$run"; exit 1; }
 [ -z "$(kubectl --context kind-target -n app get deploy,svc -o name)" ] || { echo "Pilot objects remain on the target"; exit 1; }
 api GET "/runs/$run" | py 'print([s["step"]+":"+s["status"] for s in d["steps"]])'
-trap - EXIT
 echo "Pilot end-to-end passed."
