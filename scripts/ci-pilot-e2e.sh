@@ -9,9 +9,11 @@ work=$(mktemp -d)
 exec > >(tee "$work/out.log") 2>&1
 annotate() {
   [ -n "${GITHUB_ACTIONS:-}" ] || return 0
-  esc() { sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g'; }
-  printf '::error title=pilot-e2e output::%s\n' "$(tail -40 "$work/out.log" | esc)"
-  [ -f "$work/engine.log" ] && printf '::error title=pilot-e2e engine log::%s\n' "$(grep -v '"req"' "$work/engine.log" | tail -30 | esc)"
+  # One short annotation per line: long multi-line annotations are dropped.
+  tail -25 "$work/out.log" | grep -v '^::' | cut -c1-300 | while IFS= read -r line; do printf '::error title=pilot-e2e::%s\n' "${line//%/%25}"; done
+  if [ -n "${run:-}" ]; then
+    api GET "/runs/$run" 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print("::error title=run::state=%s detail=%s" % (d["state"], (d.get("detail") or "")[:300])); [print("::error title=step::%s %s %s" % (s["step"], s["status"], json.dumps({k: v for k, v in s["summary"].items() if v})[:600])) for s in d["steps"]]' || true
+  fi
   return 0
 }
 trap 'status=$?; [ $status -ne 0 ] && annotate; exit $status' EXIT
