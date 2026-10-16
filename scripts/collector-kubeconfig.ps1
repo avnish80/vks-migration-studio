@@ -37,10 +37,14 @@ Invoke-Kubectl @('apply', '-f', $rbac) | Out-Host
 
 Write-Host 'Waiting for the token...'
 $tokenB64 = ''
+# Until the token is issued kubectl prints NotFound on stderr. Under 'Stop', Windows PowerShell 5.1
+# turns redirected native stderr into a terminating error, so poll with 'Continue'.
+$ErrorActionPreference = 'Continue'
 for ($i = 0; $i -lt 30 -and -not $tokenB64; $i++) {
   $tokenB64 = (& kubectl --context $Context -n $ns get secret "$name-token" -o 'jsonpath={.data.token}' 2>$null)
   if (-not $tokenB64) { Start-Sleep -Seconds 1 }
 }
+$ErrorActionPreference = 'Stop'
 if (-not $tokenB64) { throw "The service account token was not issued. Check the cluster's token controller." }
 
 $token = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(($tokenB64 | Out-String).Trim()))
