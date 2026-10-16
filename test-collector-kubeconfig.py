@@ -6,7 +6,7 @@ from pathlib import Path
 FAKE = r'''#!/usr/bin/env bash
 log="$FAKE_DIR/calls"; echo "$*" >> "$log"
 case "$*" in
-  *" apply -f -"*) cat > "$FAKE_DIR/applied.yaml"; exit 0;;
+  *" apply -f "*) cp "${@: -1}" "$FAKE_DIR/applied.yaml"; exit 0;;
   *"jsonpath={.data.token}"*) printf '%s' "$(printf 'collector-token' | base64)"; exit 0;;
   *"jsonpath={.data.ca\.crt}"*) printf 'Q0EtREFUQQ=='; exit 0;;
   *"config view --minify"*) printf 'https://vks-lab.example:6443'; exit 0;;
