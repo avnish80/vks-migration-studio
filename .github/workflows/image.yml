@@ -1,0 +1,77 @@
+name: image
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+permissions:
+  contents: read
+env:
+  IMAGE: ghcr.io/avnish80/vks-migration-studio
+jobs:
+  # Every pull request and push: build for amd64 and smoke-test the container.
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          load: true
+          tags: studio:test
+      - name: Smoke test
+        run: |
+          docker run -d --name studio -p 127.0.0.1:8080:8080 -e STUDIO_TOKEN=$(printf 's%.0s' $(seq 1 40)) studio:test
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/api/health && break; sleep 1; done
+          curl -fsS -H "Authorization: Bearer $(printf 's%.0s' $(seq 1 40))" http://127.0.0.1:8080/api/version | tee /tmp/version.json
+          grep -q '"coreModules":\["engine"' /tmp/version.json
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/projects)" = 401
+          curl -fsS http://127.0.0.1:8080/ | grep -q '<div id="root">'
+          docker exec studio kubectl version --client
+          docker exec studio skopeo --version
+          docker exec studio python3 --version
+          test "$(docker exec studio id -u)" = 10001
+      - name: Engine log
+        if: always()
+        run: docker logs studio || true
+
+  # Tags: multi-arch build, push to GHCR with SBOM and provenance, sign with cosign (keyless).
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-and-smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: type=semver,pattern={{version}}
+      - id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          sbom: true
+          provenance: mode=max
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign image
+        run: cosign sign --yes "${IMAGE}@${{ steps.push.outputs.digest }}"

@@ -6,15 +6,40 @@ Migration Studio analyses a source cluster inventory, compares it with a VKS tar
 
 > **Status: pre-release.** The automated suites use mocked cluster interfaces. Live VKS integration testing is still pending, and the production gate is permanently closed. Do not use this for production migrations.
 
-## Run the UI locally
+## Run the engine (1.0.0-alpha)
 
-No build or npm install is needed. From the repository root:
+The engine is a container that serves the new UI and API on your machine. It reads your kubeconfig and never stores cluster credentials.
+
+Until the first release image is published, build it from the repository root:
+
+```bash
+docker build -f deploy/Dockerfile -t vks-migration-studio .
+docker run --rm -p 127.0.0.1:8080:8080 \
+  -v "$HOME/.kube:/home/studio/.kube:ro" \
+  -v studio-data:/data \
+  vks-migration-studio
+```
+
+On Windows PowerShell, use `-v "$env:USERPROFILE\.kube:/home/studio/.kube:ro"`. If your kubeconfig points at certificate files by path, those paths must also exist inside the container.
+
+On first start the engine prints a sign-in link containing an access token. The token is also kept in the data volume (`/data/token`). The engine only answers on `127.0.0.1`; to reach it under another host name, set `STUDIO_ALLOWED_HOSTS`.
+
+Milestone 1.0 provides the engine, its store, sign-in, projects and the audit log. Cluster registration (1.1) and engine-run pilots (1.2) follow; see [the phase 1 design](docs/design/phase-1-engine.md).
+
+### Develop
+
+```bash
+cd engine && npm ci && npm run dev      # API on http://127.0.0.1:8080
+cd ui && npm ci && npm run dev          # UI on http://127.0.0.1:5173, proxied to the engine
+```
+
+## Run the v0.20 browser app
+
+The original browser-only app is still in `dist/` until its views move into the new UI in phase 2:
 
 ```bash
 python3 -m http.server 8080 --bind 127.0.0.1 --directory dist   # Windows: py -3 -m http.server ...
 ```
-
-Open http://127.0.0.1:8080. A demo inventory loads automatically. The browser never contacts a cluster and stores no credentials; save your work explicitly as project JSON.
 
 ## Run the local tools
 
@@ -23,10 +48,12 @@ The scripts in `dist/` run on your workstation and need Python 3. `collect.py`, 
 ## Run the tests
 
 ```bash
-./scripts/run-tests.sh
+./scripts/run-tests.sh          # planning core and runners
+(cd engine && npm test)          # engine
+(cd ui && npm test)              # UI
 ```
 
-This needs Node.js 22, Python 3 and PyYAML (`pip install pyyaml`, used by the GitOps test). CI runs the same script on every push and pull request.
+This needs Node.js 22, Python 3 and PyYAML (`pip install pyyaml`, used by the GitOps test). CI runs all three, and builds and smoke-tests the container, on every push and pull request.
 
 ## License
 

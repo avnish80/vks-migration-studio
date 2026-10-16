@@ -1,0 +1,7 @@
+.git
+**/node_modules
+**/build
+ui/dist
+.studio-data
+**/*.png
+**/__pycache__
