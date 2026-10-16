@@ -17,6 +17,7 @@ if (args.includes('config') && args.includes('view')) out({
 });
 if (ctx === 'denied') fail('Error from server (Forbidden): namespaces "kube-system" is forbidden: User "secret-user@corp.example" cannot get resource');
 if (ctx === 'down') fail('Unable to connect to the server: dial tcp 10.9.9.9:6443: connect: connection refused');
+if (args.includes('auth') && args.includes('can-i')) { const yes = fs.existsSync(path.join(dir, ctx + '.admin')); process.stdout.write(yes ? 'yes\n' : 'no\n'); process.exit(yes ? 0 : 1); }
 const uidFile = path.join(dir, (ctx === 'alias-of-source' ? 'lab-source' : ctx === 'lab-target-pilot' ? 'lab-target' : ctx) + '.uid');
 const uid = fs.existsSync(uidFile) ? fs.readFileSync(uidFile, 'utf8').trim() : '00000000-0000-0000-0000-000000000000';
 if (args.includes('version')) out({ serverVersion: { gitVersion: 'v1.33.4' } });

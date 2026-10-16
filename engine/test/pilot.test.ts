@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { auth, makeApp } from './helpers.js';
 import type { DB } from '../src/db/index.js';
-import { recoverRuns, runDir } from '../src/pilot.js';
+import { pilotHandler, recoverRuns, runDir } from '../src/pilot.js';
 import type { Config } from '../src/config.js';
 
 const FAKE_KUBECTL = path.resolve('test/fixtures/fake-kubectl.cjs');
@@ -64,6 +64,17 @@ describe('pilot login', () => {
     expect((await call('PUT', `/api/clusters/${tgt}/pilot-context`, { contextName: 'lab-source' })).statusCode).toBe(400);
     expect((await call('PUT', `/api/clusters/${tgt}/pilot-context`, { contextName: 'nope' })).statusCode).toBe(400);
     expect((await call('PUT', `/api/clusters/${tgt}/pilot-context`, { contextName: 'lab-target-pilot' })).statusCode).toBe(200);
+  });
+
+  it('refuses the registered inventory login and a login that can write cluster-wide', async () => {
+    const { tgt } = await ready();
+    const own = await call('PUT', `/api/clusters/${tgt}/pilot-context`, { contextName: 'lab-target' });
+    expect(own.statusCode).toBe(400);
+    expect(own.json().message).toContain('registered');
+    fs.writeFileSync(path.join(dir, 'lab-target-pilot.admin'), '');
+    const admin = await call('PUT', `/api/clusters/${tgt}/pilot-context`, { contextName: 'lab-target-pilot' });
+    expect(admin.statusCode).toBe(400);
+    expect(admin.json().message).toContain('every namespace');
   });
 
   it('is required before planning', async () => {
@@ -171,7 +182,7 @@ describe('pilot runs', () => {
     // Simulate an engine that died while deploying: busy state, no job, partial receipt on disk.
     await db.updateTable('runs').set({ state: 'Deploying' }).where('id', '=', runId).execute();
     fs.writeFileSync(path.join(runDir(config, runId), 'deploy.json'), JSON.stringify({ kind: 'PilotExecutionResult', runId: 'partial-run', status: 'Started', created: [{ kind: 'Service', name: 'web', namespace: 'app', uid: 'u' }], uncertain: ['Deployment/web'] }));
-    expect(await recoverRuns(db)).toBe(1);
+    expect(await recoverRuns(db, config)).toBe(1);
     let run = (await call('GET', `/api/runs/${runId}`)).json();
     expect(run.state).toBe('NeedsReview');
     expect(run.runLabel).toBe(runId);
@@ -182,6 +193,107 @@ describe('pilot runs', () => {
     const receiptArg = calls().filter(a => a[1] === 'inspect').at(-1)!;
     expect(receiptArg).toContain('--receipt');
     expect(run.runLabel).toBe('partial-run');   // adopted from the partial receipt
+  });
+
+  it('after a restart, a pilot job left Running is failed and its run gets a way forward', async () => {
+    const { tgt, pid, wid } = await ready(`example.net/web@${DIGEST}`);
+    await call('PUT', `/api/clusters/${tgt}/pilot-context`, { contextName: 'lab-target-pilot' });
+    const p = (await plan(pid, wid, {})).json();
+    const runId = (await call('POST', `/api/plans/${p.id}/runs`, { acknowledgePrerequisites: true })).json().runId;
+    await settle(runId);
+    // The engine died during the deploy: the job still holds an unexpired lease, a partial receipt shows created objects.
+    await db.updateTable('runs').set({ state: 'Deploying' }).where('id', '=', runId).execute();
+    const now = new Date().toISOString();
+    await db.insertInto('jobs').values({ id: 'dead-job', type: 'pilot', project_id: pid, payload: JSON.stringify({ runId, step: 'deploy' }), state: 'Running', attempts: 1, lease_owner: 'dead-engine', lease_until: new Date(Date.now() + 60_000).toISOString(), progress: null, result: null, error: null, created_at: now, updated_at: now }).execute();
+    fs.writeFileSync(path.join(runDir(config, runId), 'deploy.json'), JSON.stringify({ kind: 'PilotExecutionResult', runId: 'partial-run', status: 'Started', created: [{ kind: 'Service', name: 'web', namespace: 'app', uid: 'u' }], uncertain: [] }));
+    expect(await recoverRuns(db, config)).toBe(1);
+    expect((await db.selectFrom('jobs').select('state').where('id', '=', 'dead-job').executeTakeFirstOrThrow()).state).toBe('Failed');
+    expect((await call('GET', `/api/runs/${runId}`)).json().actions).toEqual(['inspect']);
+  });
+
+  it('a deploy that stopped before recording anything closes as NothingCreated', async () => {
+    const { tgt, pid, wid } = await ready(`example.net/web@${DIGEST}`);
+    await call('PUT', `/api/clusters/${tgt}/pilot-context`, { contextName: 'lab-target-pilot' });
+    const p = (await plan(pid, wid, {})).json();
+    // On a restart with no receipt at all.
+    const first = (await call('POST', `/api/plans/${p.id}/runs`, { acknowledgePrerequisites: true })).json().runId;
+    await settle(first);
+    await db.updateTable('runs').set({ state: 'Deploying' }).where('id', '=', first).execute();
+    await recoverRuns(db, config);
+    expect((await call('GET', `/api/runs/${first}`)).json().state).toBe('NothingCreated');
+    // When the runner dies before its first save.
+    scenario({ deploy: 'Crash' });
+    const second = (await call('POST', `/api/plans/${p.id}/runs`, { acknowledgePrerequisites: true })).json().runId;
+    await settle(second);
+    await call('POST', `/api/runs/${second}/deploy`, { confirmWorkload: 'app/Deployment/web' });
+    const run = await settle(second);
+    expect(run.state).toBe('NothingCreated');
+    expect(run.closed).toBe(true);
+  });
+
+  it('an interrupted inspection does not block the next one', async () => {
+    const { tgt, pid, wid } = await ready(`example.net/web@${DIGEST}`);
+    await call('PUT', `/api/clusters/${tgt}/pilot-context`, { contextName: 'lab-target-pilot' });
+    const p = (await plan(pid, wid, {})).json();
+    const runId = (await call('POST', `/api/plans/${p.id}/runs`, { acknowledgePrerequisites: true })).json().runId;
+    await settle(runId);
+    await call('POST', `/api/runs/${runId}/deploy`, { confirmWorkload: 'app/Deployment/web' });
+    await settle(runId);
+    scenario({ inspect: 'Crash' });
+    await call('POST', `/api/runs/${runId}/inspect`, {});
+    expect((await settle(runId)).state).toBe('NeedsReview');
+    scenario({});
+    await call('POST', `/api/runs/${runId}/inspect`, {});
+    expect((await settle(runId)).state).toBe('Inspected');
+  });
+
+  it('a queued step does nothing if the run left its busy state', async () => {
+    const { tgt, pid, wid } = await ready(`example.net/web@${DIGEST}`);
+    await call('PUT', `/api/clusters/${tgt}/pilot-context`, { contextName: 'lab-target-pilot' });
+    const p = (await plan(pid, wid, {})).json();
+    const runId = (await call('POST', `/api/plans/${p.id}/runs`, { acknowledgePrerequisites: true })).json().runId;
+    await settle(runId);
+    await db.updateTable('runs').set({ state: 'Discarded' }).where('id', '=', runId).execute();
+    const before = calls().length;
+    await expect(pilotHandler(db, config).run({ id: 'job-x', payload: { runId, step: 'deploy', confirmWorkload: 'app/Deployment/web' }, progress: async () => {} })).rejects.toThrow(/nothing was done/);
+    expect(calls().length).toBe(before);
+    expect((await call('GET', `/api/runs/${runId}`)).json().state).toBe('Discarded');
+    expect((await call('POST', `/api/runs/${runId}/discard`, {})).statusCode).toBe(409);
+  });
+
+  it("refuses a plan whose target cluster or pilot login is no longer the project's", async () => {
+    const { tgt, pid, wid } = await ready(`example.net/web@${DIGEST}`);
+    await call('PUT', `/api/clusters/${tgt}/pilot-context`, { contextName: 'lab-target-pilot' });
+    const p = (await plan(pid, wid, {})).json();
+    const runId = (await call('POST', `/api/plans/${p.id}/runs`, { acknowledgePrerequisites: true })).json().runId;
+    await settle(runId);
+    await call('PUT', `/api/clusters/${tgt}/pilot-context`, { contextName: null });
+    const deploy = await call('POST', `/api/runs/${runId}/deploy`, { confirmWorkload: 'app/Deployment/web' });
+    expect(deploy.statusCode).toBe(409);
+    expect(deploy.json().message).toContain('changed after this plan');
+    await call('POST', `/api/runs/${runId}/discard`, {});
+    expect((await call('POST', `/api/plans/${p.id}/runs`, { acknowledgePrerequisites: true })).statusCode).toBe(409);
+  });
+
+  it('the workload state follows the latest run, not any earlier pass', async () => {
+    const { tgt, pid, wid } = await ready(`example.net/web@${DIGEST}`);
+    await call('PUT', `/api/clusters/${tgt}/pilot-context`, { contextName: 'lab-target-pilot' });
+    const p = (await plan(pid, wid, {})).json();
+    const state = async () => (await call('GET', `/api/projects/${pid}/workloads`)).json().items.find((w: { id: string }) => w.id === wid).state;
+    const first = (await call('POST', `/api/plans/${p.id}/runs`, { acknowledgePrerequisites: true })).json().runId;
+    await settle(first);
+    await call('POST', `/api/runs/${first}/deploy`, { confirmWorkload: 'app/Deployment/web' });
+    await settle(first);
+    expect(await state()).toBe('PilotPassed');
+    scenario({ inspect: 'Absent' });
+    await call('POST', `/api/runs/${first}/inspect`, {});
+    await settle(first);
+    scenario({ deploy: 'FailedNothing' });
+    const second = (await call('POST', `/api/plans/${p.id}/runs`, { acknowledgePrerequisites: true })).json().runId;
+    await settle(second);
+    await call('POST', `/api/runs/${second}/deploy`, { confirmWorkload: 'app/Deployment/web' });
+    await settle(second);
+    expect(await state()).toBe('PilotFailed');
   });
 
   it('discards a validated run that was never deployed', async () => {

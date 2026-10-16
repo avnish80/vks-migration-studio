@@ -18,7 +18,7 @@ async function main(): Promise<void> {
   const core = loadCore(config.coreDir);
   const { token, created } = loadOrCreateToken(config.dataDir, config.token);
   const jobs = new JobRunner(db, { collect: collectHandler(db, core, config), pilot: pilotHandler(db, config) });
-  const recovered = await recoverRuns(db);
+  const recovered = await recoverRuns(db, config);
   if (recovered) process.stdout.write(`${recovered} pilot run(s) were interrupted by a restart and now need an inspection.\n`);
   const app = await buildApp({ config, db, core, token, jobs, logger: true });
   await app.listen({ host: config.host, port: config.port });

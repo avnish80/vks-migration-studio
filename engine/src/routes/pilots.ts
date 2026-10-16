@@ -5,7 +5,7 @@ import type { DB } from '../db/index.js';
 import type { JobRunner } from '../jobs.js';
 import { record } from '../audit.js';
 import { getBlob } from '../blobs.js';
-import { clusterUid, KubeError, listContexts } from '../kube.js';
+import { canI, clusterUid, KubeError, listContexts } from '../kube.js';
 import { createPlan, PilotError, planView, requestStep, runView, startRun, type Step } from '../pilot.js';
 
 const fail = (reply: FastifyReply, e: unknown) => {
@@ -28,7 +28,11 @@ export function pilotRoutes(app: FastifyInstance, db: DB, core: Core, config: Co
       const name = request.body.contextName;
       if (name !== null) {
         if (!(await listContexts(config)).some(x => x.name === name)) throw new PilotError(400, 'That context is not in the kubeconfig the engine reads.');
+        const registered = await db.selectFrom('clusters').select('context_name').where('context_name', '=', name).where('retired_at', 'is', null).executeTakeFirst();
+        if (registered) throw new PilotError(400, 'That context is registered as a cluster for inventory. Use the separate, namespace-scoped pilot login (scripts/pilot-kubeconfig).');
         if ((await clusterUid(config, name)) !== c.observed_uid) throw new PilotError(400, 'That context reaches a different cluster than this target.');
+        // A pilot login must be limited to namespaces: refuse one that can write cluster-wide.
+        if (await canI(config, name, ['create', 'deployments.apps', '--all-namespaces'])) throw new PilotError(400, 'That context can create Deployments in every namespace. Use a namespace-scoped pilot login (scripts/pilot-kubeconfig).');
       }
       await db.updateTable('clusters').set({ pilot_context_name: name }).where('id', '=', c.id).execute();
       await record(db, 'cluster.pilot-context', `cluster/${c.id}`, { context: name });

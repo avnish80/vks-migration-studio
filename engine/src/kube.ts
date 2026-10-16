@@ -101,3 +101,19 @@ export async function clusterUid(config: Config, context: string): Promise<strin
   if (typeof uid !== 'string' || !/^[0-9a-f-]{8,64}$/i.test(uid)) throw failure('Other');
   return uid;
 }
+
+/** `kubectl auth can-i`: true for "yes". It exits 1 for "no", so the exit code alone is not an error. */
+export function canI(config: Config, context: string, args: string[]): Promise<boolean> {
+  if (!validContextName(context)) return Promise.reject(new KubeError('NotFound', 'Invalid context name.'));
+  return new Promise((resolve, reject) => {
+    execFile(config.kubectl, ['--request-timeout=20s', '--context', context, 'auth', 'can-i', ...args], { env: kubeEnv(config), timeout: 30_000 }, (error, stdout, stderr) => {
+      const answer = String(stdout).trim().split('\n')[0];
+      if (answer === 'yes') return resolve(true);
+      if (answer === 'no') return resolve(false);
+      const e = error as (NodeJS.ErrnoException & { killed?: boolean }) | null;
+      if (e?.code === 'ENOENT') return reject(failure('NoKubectl'));
+      if (e?.killed) return reject(failure('Timeout'));
+      reject(failure(classify(String(stderr))));
+    });
+  });
+}

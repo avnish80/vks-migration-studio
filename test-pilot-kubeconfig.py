@@ -28,10 +28,15 @@ class PilotKubeconfig(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(stat.S_IMODE(out.stat().st_mode), 0o600)
         config = yaml.safe_load(out.read_text())
-        self.assertEqual(config['contexts'][0]['name'], 'vks-pilot')
+        self.assertEqual(config['contexts'][0]['name'], 'vks-pilot-payments')
         self.assertEqual(config['contexts'][0]['context']['namespace'], 'payments')
         docs = list(yaml.safe_load_all(Path(d, 'applied.yaml').read_text()))
         self.assertNotIn('__NAMESPACE__', Path(d, 'applied.yaml').read_text())
+        self.assertNotIn('__NAME__', Path(d, 'applied.yaml').read_text())
+        # One service account per namespace, so a second namespace never widens an existing login.
+        sa = next(x for x in docs if x['kind'] == 'ServiceAccount')
+        self.assertEqual(sa['metadata']['name'], 'vks-migration-studio-pilot-payments')
+        self.assertEqual(config['users'][0]['user']['token'], 'pilot-token')
         cluster_role = next(x for x in docs if x['kind'] == 'ClusterRole')
         for rule in cluster_role['rules']:
             self.assertTrue(set(rule['verbs']) <= {'get', 'list'}, rule)
@@ -43,6 +48,20 @@ class PilotKubeconfig(unittest.TestCase):
             self.assertNotIn('*', rule['resources']); self.assertNotIn('*', rule['verbs'])
         binding = next(x for x in docs if x['kind'] == 'RoleBinding')
         self.assertEqual(binding['metadata']['namespace'], 'payments')
+        self.assertEqual(binding['subjects'][0]['name'], 'vks-migration-studio-pilot-payments')
+        cluster_binding = next(x for x in docs if x['kind'] == 'ClusterRoleBinding')
+        self.assertEqual(cluster_binding['metadata']['name'], 'vks-migration-studio-pilot-payments')
+
+    def test_default_output_name_and_empty_server(self):
+        r, d = self.run_script('vks', 'payments')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(Path('vks-pilot-payments.kubeconfig').exists()); Path('vks-pilot-payments.kubeconfig').unlink()
+        fake = Path(d, 'kubectl'); fake.write_text(FAKE.replace("printf 'https://vks.example:6443'", "printf ''"))
+        out = Path(tempfile.mkdtemp(), 'p.kubeconfig')
+        r = subprocess.run(['bash', 'scripts/pilot-kubeconfig.sh', 'vks', 'payments', str(out)], env={**os.environ, 'PATH': d + os.pathsep + os.environ['PATH'], 'FAKE_DIR': d}, capture_output=True, text=True)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('API server address', r.stderr)
+        self.assertFalse(out.exists())
 
     def test_refuses_missing_namespace_and_bad_names(self):
         for args in [('vks', 'missing'), ('vks', 'Bad_NS'), ('bad: ctx', 'payments')]:

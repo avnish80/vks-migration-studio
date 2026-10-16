@@ -109,11 +109,26 @@ async function setRun(db: DB, runId: string, state: RunState, detail: string | n
 
 /** Workload lifecycle follows its runs; assessment never overwrites these states. */
 async function syncWorkload(db: DB, workloadId: string) {
-  const runs = await db.selectFrom('runs').select(['state']).where('workload_id', '=', workloadId).orderBy('created_at', 'desc').execute();
-  const passed = (await db.selectFrom('evidence as e').innerJoin('runs as r', 'r.id', 'e.run_id').select('e.id').where('r.workload_id', '=', workloadId).where('e.kind', 'in', ['deploy:Passed', 'observe:Passed']).executeTakeFirst()) !== undefined;
-  const open = runs.find(r => !CLOSED.includes(r.state as RunState));
-  const state = open ? (passed ? 'PilotPassed' : 'Piloting') : passed ? 'PilotPassed' : runs.some(r => r.state === 'NothingCreated' || r.state === 'Cleaned' || r.state === 'Absent') ? 'PilotFailed' : 'Planned';
-  await db.updateTable('workloads').set({ state, updated_at: new Date().toISOString() }).where('id', '=', workloadId).execute();
+  // The latest run that got past validation decides: an earlier pass does not outlive a later failure.
+  const latest = await db.selectFrom('runs').select(['id', 'state']).where('workload_id', '=', workloadId).where('state', 'not in', ['Discarded', 'ValidationFailed']).orderBy('created_at', 'desc').orderBy('id', 'desc').limit(1).executeTakeFirst();
+  let state = 'Planned';
+  if (latest) {
+    const last = await db.selectFrom('evidence').select('kind').where('run_id', '=', latest.id).where(eb => eb.or([eb('kind', 'like', 'deploy:%'), eb('kind', 'like', 'observe:%')])).orderBy('observed_at', 'desc').orderBy('id', 'desc').limit(1).executeTakeFirst();
+    const passed = last?.kind === 'deploy:Passed' || last?.kind === 'observe:Passed';
+    const open = !CLOSED.includes(latest.state as RunState);
+    state = passed ? 'PilotPassed' : open ? 'Piloting' : 'PilotFailed';
+  }
+  await db.updateTable('workloads').set({ state, updated_at: new Date().toISOString() }).where('id', '=', workloadId).where('state', 'in', ['Assessed', 'Planned', 'Blocked', 'Piloting', 'PilotPassed', 'PilotFailed']).execute();
+}
+
+/** A plan names a pilot login and a cluster; both must still be the project's current target. */
+async function assertPlanTarget(db: DB, plan: { project_id: string | null; settings: string | null }) {
+  const inputs = (plan.settings ? JSON.parse(plan.settings) : {}) as { context?: string; targetUid?: string };
+  const project = plan.project_id ? await db.selectFrom('projects').select('target_cluster_id').where('id', '=', plan.project_id).executeTakeFirst() : undefined;
+  const target = project?.target_cluster_id ? await db.selectFrom('clusters').select(['pilot_context_name', 'observed_uid', 'retired_at']).where('id', '=', project.target_cluster_id).executeTakeFirst() : undefined;
+  if (!target || target.retired_at || target.pilot_context_name !== inputs.context || target.observed_uid !== inputs.targetUid) {
+    throw new PilotError(409, "The project's target cluster or its pilot login changed after this plan was made. Create a new plan.");
+  }
 }
 
 export async function startRun(db: DB, planId: string, acknowledgePrerequisites: boolean): Promise<string> {
@@ -123,6 +138,7 @@ export async function startRun(db: DB, planId: string, acknowledgePrerequisites:
   if (!acknowledgePrerequisites) throw new PilotError(400, 'Confirm that the listed prerequisites are in place on the target.');
   const latest = await db.selectFrom('plans').select('id').where('workload_id', '=', plan.workload_id).orderBy('created_at', 'desc').limit(1).executeTakeFirst();
   if (latest?.id !== plan.id) throw new PilotError(409, 'A newer plan exists for this workload. Use the latest plan.');
+  await assertPlanTarget(db, plan);
   const id = crypto.randomUUID(), now = new Date().toISOString();
   try {
     await db.insertInto('runs').values({ id, plan_id: plan.id, workload_id: plan.workload_id, project_id: plan.project_id, run_label: id, state: 'Validating', status_detail: null, lease_owner: null, heartbeat_at: null, created_at: now, updated_at: now }).execute();
@@ -149,9 +165,10 @@ export async function requestStep(db: DB, runId: string, step: Step | 'discard',
   if (!run) throw new PilotError(404, 'No run with that id.');
   const state = run.state as RunState;
   if (!ACTIONS[state]?.includes(step)) throw new PilotError(409, `A run in state ${state} cannot ${step}.`);
-  const plan = await db.selectFrom('plans').select(['blob_hash']).where('id', '=', run.plan_id).executeTakeFirstOrThrow();
+  const plan = await db.selectFrom('plans').select(['blob_hash', 'project_id', 'settings']).where('id', '=', run.plan_id).executeTakeFirstOrThrow();
   const workload = (await getBlob<{ workload: string }>(db, plan.blob_hash)).workload;
   if (step === 'deploy') {
+    await assertPlanTarget(db, plan);
     if (body.confirmWorkload !== workload) throw new PilotError(400, `Type the workload name exactly (${workload}) to confirm the deployment.`);
     const v = await lastEvidence(db, runId, 'validate');
     if (!v || v.kind !== 'validate:Passed' || Date.now() - Date.parse(v.observedAt) > VALIDATION_MAX_AGE_MS) throw new PilotError(409, 'The last validation is missing, failed or older than 25 minutes. Validate again.');
@@ -163,7 +180,8 @@ export async function requestStep(db: DB, runId: string, step: Step | 'discard',
     if (!i || !['inspect:ReviewRequired', 'inspect:Absent'].includes(i.kind) || Date.now() - Date.parse(i.observedAt) > INSPECTION_MAX_AGE_MS) throw new PilotError(409, 'Clean-up needs an inspection from the last 9 minutes. Inspect again.');
   }
   if (step === 'discard') {
-    await setRun(db, runId, 'Discarded', 'Discarded before deployment; nothing was created.');
+    const discarded = await db.updateTable('runs').set({ state: 'Discarded', status_detail: 'Discarded before deployment; nothing was created.', updated_at: new Date().toISOString() }).where('id', '=', runId).where('state', '=', state).executeTakeFirst();
+    if (discarded.numUpdatedRows !== 1n) throw new PilotError(409, 'The run changed meanwhile. Reload and try again.');
     await record(db, 'pilot.run.discard', `run/${runId}`);
     await syncWorkload(db, run.workload_id);
     return;
@@ -217,16 +235,19 @@ async function deployReceipt(db: DB, config: Config, runId: string): Promise<Rec
 export function pilotHandler(db: DB, config: Config): JobHandler {
   return {
     retryable: false,   // pilot steps write to a cluster: never repeated automatically
-    async run({ payload, progress }) {
+    async run({ id: jobId, payload, progress }) {
       const { runId, step, confirmWorkload, confirmRun } = payload as { runId: string; step: Step; confirmWorkload?: string; confirmRun?: string };
       const run = await db.selectFrom('runs').selectAll().where('id', '=', runId).executeTakeFirstOrThrow();
+      // The request marked the run busy for this step; anything else means it changed since (and this job must not act).
+      if (run.state !== BUSY[step]) throw new JobFailure(`The run is ${run.state}, not ready for ${step}; nothing was done.`);
       const plan = await db.selectFrom('plans').selectAll().where('id', '=', run.plan_id).executeTakeFirstOrThrow();
       const planDoc = await getBlob<Record<string, unknown> & { preflight: { expectedContext: string } }>(db, plan.blob_hash);
       const context = planDoc.preflight.expectedContext;
       const dir = runDir(config, runId);
       const n = (await db.selectFrom('evidence').select('id').where('run_id', '=', runId).execute()).length;
       const write = (name: string, value: unknown) => { const f = path.join(dir, name); fs.writeFileSync(f, JSON.stringify(value), { mode: 0o600 }); return f; };
-      const output = path.join(dir, step === 'deploy' ? 'deploy.json' : `${String(n + 1).padStart(3, '0')}-${step}.json`);
+      // Deploy happens once per run; other steps can repeat, and an interrupted attempt leaves its file behind.
+      const output = path.join(dir, step === 'deploy' ? 'deploy.json' : `${String(n + 1).padStart(3, '0')}-${step}-${jobId.slice(0, 8)}.json`);
       if (fs.existsSync(output)) throw new JobFailure('A receipt for this step already exists. Inspect the run before continuing.');
       const args = [step, '--context', context, '--plan', write('plan.json', planDoc), '--output', output];
       try {
@@ -236,7 +257,11 @@ export function pilotHandler(db: DB, config: Config): JobHandler {
         }
         if (step === 'observe' || step === 'inspect' || step === 'cleanup') {
           const receipt = await deployReceipt(db, config, runId);
-          if (!receipt) throw new JobFailure('No deploy receipt exists for this run, so there is nothing to inspect.');
+          if (!receipt) {
+            // The runner writes its receipt (with the run label) before it creates anything on the target.
+            await closeNothingCreated(db, runId, run.workload_id, 'The deploy never reached the target: there is no deploy receipt, and the runner records one before it creates anything.');
+            return { step, status: 'NoReceipt', state: 'NothingCreated' };
+          }
           // A partial receipt from an interrupted deploy also carries the label on the target objects.
           if (typeof receipt.runId === 'string' && /^[a-z0-9-]{1,80}$/.test(receipt.runId) && receipt.runId !== run.run_label) {
             await db.updateTable('runs').set({ run_label: receipt.runId }).where('id', '=', runId).execute();
@@ -267,6 +292,10 @@ export function pilotHandler(db: DB, config: Config): JobHandler {
       } catch (error) {
         // Validation and inspection only read; a failure there changes nothing on the target.
         const after: RunState = step === 'validate' ? 'ValidationFailed' : step === 'inspect' ? 'NeedsReview' : step === 'observe' ? 'NeedsRecovery' : 'NeedsReview';
+        if (step === 'deploy' && !(await deployReceipt(db, config, runId))) {
+          await closeNothingCreated(db, runId, run.workload_id, `${error instanceof JobFailure ? error.message : 'The deploy failed unexpectedly.'} It stopped before the runner recorded anything, so nothing was created.`);
+          throw error;
+        }
         await setRun(db, runId, after, error instanceof JobFailure ? error.message : 'The pilot step failed unexpectedly. Inspect the target before anything else.');
         await syncWorkload(db, run.workload_id);
         throw error;
@@ -277,14 +306,33 @@ export function pilotHandler(db: DB, config: Config): JobHandler {
   };
 }
 
-/** After an engine restart: steps that were running when it stopped need an inspection. */
-export async function recoverRuns(db: DB): Promise<number> {
+async function closeNothingCreated(db: DB, runId: string, workloadId: string, detail: string) {
+  await setRun(db, runId, 'NothingCreated', detail);
+  await record(db, 'pilot.deploy.nothing-created', `run/${runId}`, { detail });
+  await syncWorkload(db, workloadId);
+}
+
+/**
+ * At engine start, before the job runner: one engine owns the data directory, so a pilot job still
+ * marked Running belongs to a process that has died. Fail it (pilot steps are never repeated) and move
+ * its run to a state with a way forward; queued steps still run.
+ */
+export async function recoverRuns(db: DB, config: Config): Promise<number> {
+  const now = new Date().toISOString();
+  await db.updateTable('jobs').set({ state: 'Failed', error: 'The engine stopped while this pilot step was running. Inspect the target before anything else.', lease_owner: null, lease_until: null, updated_at: now }).where('type', '=', 'pilot').where('state', '=', 'Running').execute();
   const stuck = await db.selectFrom('runs').select(['id', 'workload_id', 'state']).where('state', 'in', ['Validating', 'Deploying', 'Observing', 'Inspecting', 'Cleaning']).execute();
   let n = 0;
   for (const r of stuck) {
-    const active = await db.selectFrom('jobs').select('id').where('type', '=', 'pilot').where('state', 'in', ['Queued', 'Running']).where('payload', 'like', `%"runId":"${r.id}"%`).executeTakeFirst();
-    if (active) continue;
-    await setRun(db, r.id, r.state === 'Validating' ? 'ValidationFailed' : 'NeedsReview', 'The engine stopped while this step was running. Inspect the target before anything else.');
+    const queued = await db.selectFrom('jobs').select('id').where('type', '=', 'pilot').where('state', '=', 'Queued').where('payload', 'like', `%"runId":"${r.id}"%`).executeTakeFirst();
+    if (queued) continue;
+    const message = 'The engine stopped while this step was running. Inspect the target before anything else.';
+    if (r.state === 'Validating') await setRun(db, r.id, 'ValidationFailed', 'The engine stopped during validation; nothing was created. Start a new run.');
+    else if (r.state === 'Deploying') {
+      const receipt = await deployReceipt(db, config, r.id);
+      if (!receipt) { await closeNothingCreated(db, r.id, r.workload_id, 'The engine stopped before the deploy recorded anything, so nothing was created.'); n++; continue; }
+      if (nextState('deploy', { ...receipt, status: 'Failed' }) === 'NothingCreated') await setRun(db, r.id, 'NothingCreated', 'The engine stopped during the deploy, before the runner created anything.');
+      else await setRun(db, r.id, 'NeedsReview', message);
+    } else await setRun(db, r.id, 'NeedsReview', message);
     await syncWorkload(db, r.workload_id);
     n++;
   }

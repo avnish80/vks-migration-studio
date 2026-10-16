@@ -30,7 +30,7 @@ describe('run page', () => {
     });
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'Deploy pilot' }));
-    const go = screen.getByRole('button', { name: 'Deploy' }) as HTMLButtonElement;
+    const go = await screen.findByRole('button', { name: 'Deploy' }) as HTMLButtonElement;
     expect(go.disabled).toBe(true);
     fireEvent.change(screen.getByLabelText('Workload'), { target: { value: 'app/Deployment/web' } });
     expect(go.disabled).toBe(false);
@@ -48,13 +48,24 @@ describe('run page', () => {
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'Clean up' }));
     const go = () => screen.getAllByRole('button', { name: 'Clean up' }).at(-1) as HTMLButtonElement;
-    fireEvent.change(screen.getByLabelText(/type the run ID/), { target: { value: 'r1' } });
+    fireEvent.change(await screen.findByLabelText(/type the run ID/), { target: { value: 'r1' } });
     expect(go().disabled).toBe(true);
     fireEvent.click(screen.getByLabelText(/application owner has reviewed/));
     expect(go().disabled).toBe(false);
     fireEvent.click(go());
     expect(await screen.findByText('Cleaned')).toBeTruthy();
     expect(calls.find(c => c.key === 'POST /api/runs/r1/cleanup')!.body).toEqual({ confirmRun: 'r1', acknowledgeExternalState: true });
+  });
+});
+
+describe('run page, refreshed confirmation', () => {
+  it('reloads the run before asking for the run ID, which an inspection can change', async () => {
+    window.history.replaceState(null, '', '/runs?run=r1');
+    let reads = 0;
+    mockApi({ 'GET /api/runs/r1': () => ({ status: 200, body: { ...run('Inspected', ['cleanup', 'inspect', 'observe']), runLabel: reads++ ? 'label-on-target' : 'r1' } }) });
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Clean up' }));
+    expect(await screen.findByLabelText(/label-on-target/)).toBeTruthy();
   });
 });
 

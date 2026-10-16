@@ -67,6 +67,13 @@ function RunView({ id }: { id: string }) {
     catch (e) { setError(e instanceof Error ? e.message : 'Request failed.'); }
   };
 
+  // Confirmations show values (like the run ID on the target) that a step can change: reload first.
+  const choose = async (action: RunAction) => {
+    if (action !== 'deploy' && action !== 'cleanup' && action !== 'discard') return act(action);
+    await load();
+    setConfirm(action);
+  };
+
   if (!run) return error ? <div className="alert error" role="alert">{error}</div> : <p aria-busy="true">Loading…</p>;
   return (
     <>
@@ -89,7 +96,7 @@ function RunView({ id }: { id: string }) {
       {!busy && run.actions.length > 0 && !confirm && (
         <div className="actions">
           {run.actions.map(a => (
-            <button key={a} className={a === 'deploy' || a === 'cleanup' ? 'btn' : 'btn outline'} onClick={() => (a === 'deploy' || a === 'cleanup' || a === 'discard' ? setConfirm(a) : void act(a))}>{LABEL[a]}</button>
+            <button key={a} className={a === 'deploy' || a === 'cleanup' ? 'btn' : 'btn outline'} onClick={() => void choose(a)}>{LABEL[a]}</button>
           ))}
         </div>
       )}

@@ -13,6 +13,8 @@ const plan = JSON.parse(fs.readFileSync(opt('--plan'), 'utf8'));
 const receipt = opt('--receipt') ? JSON.parse(fs.readFileSync(opt('--receipt'), 'utf8')) : null;
 const base = { schemaVersion: 1, binding: plan.binding, planRevision: plan.planRevision, workload: plan.workload, context: opt('--context'), clusterUID: plan.preflight.expectedClusterUID, observedAt: new Date().toISOString() };
 const objects = plan.preflight.manifests.items.map(r => ({ kind: r.kind, name: r.metadata.name, namespace: r.metadata.namespace, uid: r.kind + '-uid' }));
+// "Crash": the runner dies before its first save (deploy) or right after creating the empty output file.
+if (scenario[mode] === 'Crash') { if (mode !== 'deploy') fs.writeFileSync(opt('--output'), ''); process.exit(1); }
 let report;
 const want = scenario[mode] ?? ({ inspect: 'ReviewRequired', cleanup: 'Absent' }[mode] ?? 'Passed');
 if (mode === 'validate' || mode === 'deploy') {

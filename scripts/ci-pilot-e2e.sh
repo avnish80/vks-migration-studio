@@ -33,7 +33,10 @@ echo "== Logins"
 scripts/collector-kubeconfig.sh kind-source "$work/source.kc"
 scripts/collector-kubeconfig.sh kind-target "$work/target.kc"
 scripts/pilot-kubeconfig.sh kind-target app "$work/pilot.kc"
-(umask 077; KUBECONFIG="$work/source.kc:$work/target.kc:$work/pilot.kc" kubectl config view --flatten > "$work/studio.kc")
+# An admin login, to check that the engine refuses it as a pilot login.
+(umask 077; kubectl config view --flatten --minify --context kind-target > "$work/admin.kc")
+kubectl --kubeconfig "$work/admin.kc" config rename-context kind-target kind-target-admin >/dev/null
+(umask 077; KUBECONFIG="$work/source.kc:$work/target.kc:$work/pilot.kc:$work/admin.kc" kubectl config view --flatten > "$work/studio.kc")
 
 echo "== Engine"
 KUBECONFIG="$work/studio.kc" STUDIO_DATA_DIR="$work/data" STUDIO_PORT=18090 STUDIO_TOKEN="$TOKEN" node engine/build/server.js > "$work/engine.log" 2>&1 &
@@ -41,7 +44,11 @@ for _ in $(seq 1 30); do curl -fsS $U/health >/dev/null 2>&1 && break; sleep 1; 
 
 src=$(api POST /clusters -d '{"contextName":"kind-source","role":"source"}' | py 'print(d["id"])')
 tgt=$(api POST /clusters -d '{"contextName":"kind-target","role":"target"}' | py 'print(d["id"])')
-api PUT "/clusters/$tgt/pilot-context" -d '{"contextName":"kind-target-pilot"}' >/dev/null
+for ctx in kind-target kind-target-admin; do   # the inventory login and a cluster-wide login are both refused
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H "$A" -H "$J" "$U/clusters/$tgt/pilot-context" -d "{\"contextName\":\"$ctx\"}")
+  [ "$code" = 400 ] || { echo "pilot login $ctx was not refused ($code)"; exit 1; }
+done
+api PUT "/clusters/$tgt/pilot-context" -d '{"contextName":"kind-target-pilot-app"}' >/dev/null
 pid=$(api POST /projects -d '{"name":"e2e"}' | py 'print(d["id"])')
 api PATCH "/projects/$pid/clusters" -d "{\"sourceClusterId\":\"$src\",\"targetClusterId\":\"$tgt\"}" >/dev/null
 for side in source target; do
@@ -59,7 +66,8 @@ run=$(api POST "/plans/$plan_id/runs" -d '{"acknowledgePrerequisites":true}' | p
 expect_state "$run" Validated
 api POST "/runs/$run/deploy" -d '{"confirmWorkload":"app/Deployment/web"}' >/dev/null
 expect_state "$run" PilotPassed
-kubectl --context kind-target -n app get deploy web -o jsonpath='{.metadata.labels}' | grep -q "$(api GET "/runs/$run" | py 'print(d["runLabel"])')" || true
+on_target=$(kubectl --context kind-target -n app get deploy web -o jsonpath='{.metadata.labels.migration-studio\.openai/pilot-run}')
+[ -n "$on_target" ] && [ "$on_target" = "$(api GET "/runs/$run" | py 'print(d["runLabel"])')" ] || { echo "run label on target ($on_target) does not match the run"; exit 1; }
 kubectl --context kind-target -n app get deploy,svc
 api POST "/runs/$run/observe" -d '{}' >/dev/null
 expect_state "$run" PilotPassed
