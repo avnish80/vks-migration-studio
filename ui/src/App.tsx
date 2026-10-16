@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, ApiError, captureTokenFromUrl, clearToken, getToken, setToken, type Version } from './api';
-import { navigate, useRoute, type Route } from './router';
+import { hasUnsaved, navigate, useRoute, type Route } from './router';
 import { Estate } from './views/Estate';
 import { Audit } from './views/Audit';
 import { Placeholder } from './views/Placeholder';
@@ -60,7 +60,7 @@ function Shell({ version, onSignOut }: { version: string; onSignOut: () => void 
         <div className="brand"><img src="/favicon.svg" alt="" /> VKS Migration Studio <small>{version}</small></div>
         <div className="spacer" />
         <span className="meta">Local engine · 127.0.0.1</span>
-        <button className="link" onClick={onSignOut}>Sign out</button>
+        <button className="link" onClick={() => { if (!hasUnsaved() || window.confirm('You have unsaved changes on this page. Sign out without saving?')) onSignOut(); }}>Sign out</button>
       </header>
       <div className="strip" role="note"><strong>Pre-release.</strong> Pilot and planning only. The production gate is closed and no production traffic is moved.</div>
       <div className="body">

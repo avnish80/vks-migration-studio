@@ -23,6 +23,22 @@ describe('access control', () => {
     expect((await app.inject({ url: '/api/projects', headers: auth })).statusCode).toBe(200);
   });
 
+  it('cannot be bypassed with encoded or unusual paths', async () => {
+    ({ app } = await makeApp());
+    for (const url of ['/%61pi/projects', '/%61%70%69/projects', '/api/%70rojects', '/%41PI/projects', '/api//projects', '/api/projects/', '/api/projects?x=1', '/./api/projects', '/%61pi/audit', '/%61pi/version']) {
+      for (const method of ['GET', 'HEAD', 'POST'] as const) {
+        const res = await app.inject({ method, url, headers: { host: '127.0.0.1' }, ...(method === 'POST' ? { payload: { name: 'pwned' } } : {}) });
+        expect([401, 404], `${method} ${url} -> ${res.statusCode}`).toContain(res.statusCode);
+      }
+    }
+    expect((await app.inject({ url: '/api/projects', headers: auth })).json().items).toEqual([]);
+  });
+
+  it('accepts allowed host names configured with a port', async () => {
+    const { loadConfig } = await import('../src/config.js');
+    expect(loadConfig({ STUDIO_ALLOWED_HOSTS: 'studio.lab:8443, [fd00::1]:80,Other' }).allowedHosts).toEqual(['studio.lab', '[fd00::1]', 'other']);
+  });
+
   it('refuses foreign Host headers even with a token (DNS rebinding)', async () => {
     ({ app } = await makeApp());
     for (const host of ['evil.example', 'evil.example:8080', '127.0.0.1.evil.example', 'localhost.evil.example']) {

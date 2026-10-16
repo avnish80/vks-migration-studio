@@ -36,6 +36,9 @@ describe('projects and audit', () => {
     await app.inject({ method: 'POST', url: '/api/projects', headers: auth, payload: { name: 'a' } });
     await expect(sql`update audit set action = 'x'`.execute(db)).rejects.toThrow(/append-only/);
     await expect(sql`delete from audit`.execute(db)).rejects.toThrow(/append-only/);
+    await expect(sql`insert or replace into audit (seq, at, actor, action, subject, detail) values (1, 't', 'attacker', 'forged', 's', '{}')`.execute(db)).rejects.toThrow(/append-only/);
+    const rows = await db.selectFrom('audit').selectAll().execute();
+    expect(rows.map(r => r.action)).toEqual(['project.create']);
   });
 
   it('allows only one unresolved run per workload', async () => {

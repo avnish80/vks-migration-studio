@@ -24,12 +24,15 @@ jobs:
           tags: studio:test
       - name: Smoke test
         run: |
-          docker run -d --name studio -p 127.0.0.1:8080:8080 -e STUDIO_TOKEN=$(printf 's%.0s' $(seq 1 40)) studio:test
+          # Same hardening as the README: read-only root filesystem, only /data and /tmp writable.
+          docker run -d --name studio --read-only --tmpfs /tmp -v studio-data:/data -p 127.0.0.1:8080:8080 -e STUDIO_TOKEN=$(printf 's%.0s' $(seq 1 40)) studio:test
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/api/health && break; sleep 1; done
           curl -fsS -H "Authorization: Bearer $(printf 's%.0s' $(seq 1 40))" http://127.0.0.1:8080/api/version | tee /tmp/version.json
           grep -q '"coreModules":\["engine"' /tmp/version.json
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/projects)" = 401
-          curl -fsS http://127.0.0.1:8080/ | grep -q '<div id="root">'
+          curl -fsS http://127.0.0.1:8080/ -o /tmp/index.html && grep -q '<div id="root">' /tmp/index.html
+          test "$(curl -s --path-as-is -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/%61pi/projects)" = 401
+          test "$(docker exec studio stat -c %a /data)" = 700
           docker exec studio kubectl version --client
           docker exec studio skopeo --version
           docker exec studio python3 --version

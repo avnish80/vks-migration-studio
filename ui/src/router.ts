@@ -23,12 +23,21 @@ export function navigate(to: Route): void {
 export function useRoute(): Route {
   const [route, setRoute] = useState<Route>(current);
   useEffect(() => {
-    const update = () => setRoute(current());
-    window.addEventListener('popstate', update);
+    let shown = window.location.pathname;
+    const update = () => { shown = window.location.pathname; setRoute(current()); };
+    // Back and forward: ask first, and put the address back if the user stays.
+    const pop = () => {
+      if (window.location.pathname !== shown && hasUnsaved() && !window.confirm('You have unsaved changes on this page. Leave without saving?')) {
+        window.history.pushState(null, '', shown);
+        return;
+      }
+      update();
+    };
+    window.addEventListener('popstate', pop);
     window.addEventListener('studio:navigate', update);
     const unload = (e: BeforeUnloadEvent) => { if (hasUnsaved()) { e.preventDefault(); e.returnValue = ''; } };
     window.addEventListener('beforeunload', unload);
-    return () => { window.removeEventListener('popstate', update); window.removeEventListener('studio:navigate', update); window.removeEventListener('beforeunload', unload); };
+    return () => { window.removeEventListener('popstate', pop); window.removeEventListener('studio:navigate', update); window.removeEventListener('beforeunload', unload); };
   }, []);
   return route;
 }

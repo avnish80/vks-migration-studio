@@ -7,6 +7,8 @@ import { buildApp } from './app.js';
 import { VERSION } from './version.js';
 
 async function main(): Promise<void> {
+  // Everything the engine writes (database, token) is private to its user.
+  process.umask(0o077);
   const config = loadConfig();
   const db = openDatabase(path.join(config.dataDir, 'studio.db'));
   const applied = await migrate(db);
@@ -18,6 +20,7 @@ async function main(): Promise<void> {
   process.stdout.write(`\nVKS Migration Studio ${VERSION}\n` +
     (applied.length ? `Database migrations applied: ${applied.join(', ')}\n` : '') +
     (created ? `\nOpen this link to sign in (shown once; the token is stored in ${path.join(config.dataDir, 'token')}):\n  http://${shown}:${config.port}/?token=${token}\n\n`
+             : config.token ? `\nOpen http://${shown}:${config.port}/ and sign in with the token set in STUDIO_TOKEN.\n\n`
              : `\nOpen http://${shown}:${config.port}/ and sign in with the token stored in ${path.join(config.dataDir, 'token')}.\n\n`));
   const stop = async () => { await app.close(); await db.destroy(); process.exit(0); };
   process.on('SIGINT', stop);

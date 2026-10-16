@@ -18,10 +18,13 @@ export function loadOrCreateToken(dataDir: string, fixed?: string): { token: str
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
+  // Missing, empty or truncated: write a fresh token atomically (temp file + rename).
   const token = crypto.randomBytes(32).toString('base64url');
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-  const fd = fs.openSync(file, 'wx', 0o600);
-  try { fs.writeSync(fd, token + '\n'); } finally { fs.closeSync(fd); }
+  const temp = `${file}.${process.pid}.tmp`;
+  const fd = fs.openSync(temp, 'wx', 0o600);
+  try { fs.writeSync(fd, token + '\n'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  fs.renameSync(temp, file);
   return { token, created: true };
 }
 

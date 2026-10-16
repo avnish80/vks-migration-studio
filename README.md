@@ -14,13 +14,15 @@ Until the first release image is published, build it from the repository root:
 
 ```bash
 docker build -f deploy/Dockerfile -t vks-migration-studio .
-docker run --rm -p 127.0.0.1:8080:8080 \
+docker run --rm --read-only --tmpfs /tmp -p 127.0.0.1:8080:8080 \
   -v "$HOME/.kube:/home/studio/.kube:ro" \
   -v studio-data:/data \
   vks-migration-studio
 ```
 
 On Windows PowerShell, use `-v "$env:USERPROFILE\.kube:/home/studio/.kube:ro"`. If your kubeconfig points at certificate files by path, those paths must also exist inside the container.
+
+The engine runs as user 10001. Use a named volume for `/data` as shown; if you bind-mount a host folder instead, make it writable by uid 10001. On Linux, a kubeconfig readable only by your own user (mode 0600) will not be readable inside the container; this matters from milestone 1.1, when the engine starts using it.
 
 On first start the engine prints a sign-in link containing an access token. The token is also kept in the data volume (`/data/token`). The engine only answers on `127.0.0.1`; to reach it under another host name, set `STUDIO_ALLOWED_HOSTS`.
 

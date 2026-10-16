@@ -10,11 +10,13 @@ export function captureTokenFromUrl(): void {
   window.history.replaceState(null, '', url.pathname + (url.search || '') + url.hash);
 }
 
+// Kept in memory too, so sign-in still works for this page when storage is blocked.
 export function getToken(): string | null {
-  try { return window.localStorage.getItem(KEY); } catch { return null; }
+  try { return window.localStorage.getItem(KEY) ?? memory; } catch { return memory; }
 }
 export function setToken(token: string): void {
-  try { window.localStorage.setItem(KEY, token.trim()); } catch { /* storage unavailable: token lives for this page only */ memory = token.trim(); }
+  memory = token.trim();
+  try { window.localStorage.setItem(KEY, memory); } catch { /* storage unavailable: token lives for this page only */ }
 }
 export function clearToken(): void {
   try { window.localStorage.removeItem(KEY); } catch { /* ignore */ }
@@ -27,7 +29,7 @@ export class ApiError extends Error {
 }
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const token = getToken() ?? memory;
+  const token = getToken();
   const headers = new Headers(init.headers);
   if (token) headers.set('authorization', `Bearer ${token}`);
   if (init.body) headers.set('content-type', 'application/json');

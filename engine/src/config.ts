@@ -24,7 +24,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     dataDir: path.resolve(env.STUDIO_DATA_DIR ?? path.join(root, '.studio-data')),
     uiDir: path.resolve(env.STUDIO_UI_DIR ?? path.join(root, 'ui', 'dist')),
     coreDir: path.resolve(env.STUDIO_CORE_DIR ?? path.join(root, 'dist')),
-    allowedHosts: (env.STUDIO_ALLOWED_HOSTS ?? '').split(',').map(h => h.trim().toLowerCase()).filter(Boolean),
+    // Host names only; a port given here is ignored because the check compares names.
+    allowedHosts: (env.STUDIO_ALLOWED_HOSTS ?? '').split(',').map(h => h.trim().toLowerCase()).filter(Boolean).map(h => h.startsWith('[') ? h.slice(0, h.indexOf(']') + 1) : h.split(':')[0] ?? h),
     token: env.STUDIO_TOKEN || undefined,
   };
 }

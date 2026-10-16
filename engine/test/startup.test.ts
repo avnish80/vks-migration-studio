@@ -22,6 +22,11 @@ describe('start-up', () => {
     const second = loadOrCreateToken(dir);
     expect(second).toEqual({ token: first.token, created: false });
     expect(() => loadOrCreateToken(dir, 'short')).toThrow(/32/);
+    // An empty or truncated token file is replaced instead of blocking start-up.
+    fs.writeFileSync(path.join(dir, 'token'), '');
+    const replaced = loadOrCreateToken(dir);
+    expect(replaced.created).toBe(true);
+    expect(fs.readFileSync(path.join(dir, 'token'), 'utf8').trim()).toBe(replaced.token);
     expect(tokenMatches(first.token, first.token)).toBe(true);
     expect(tokenMatches(first.token, undefined)).toBe(false);
   });
@@ -34,6 +39,7 @@ describe('start-up', () => {
     db = openDatabase(file);
     expect(await migrate(db)).toEqual([]);
     await db.destroy();
+    if (process.platform !== 'win32') expect(fs.statSync(file).mode & 0o777).toBe(0o600);
   });
 
   it('loads every reused planning module from dist/', async () => {
@@ -52,6 +58,7 @@ describe('start-up', () => {
     ({ app } = await makeApp({ uiDir: ui }));
     const page = await app.inject({ url: '/estate', headers: { host: 'localhost' } });
     expect(page.statusCode).toBe(200);
+    expect((await app.inject({ method: 'HEAD', url: '/estate', headers: { host: 'localhost' } })).statusCode).toBe(200);
     expect(page.body).toContain('<title>Studio</title>');
     const api = await app.inject({ url: '/api/nope', headers: auth });
     expect(api.statusCode).toBe(404);

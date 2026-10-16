@@ -79,3 +79,35 @@ describe('estate', () => {
     await waitFor(() => expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('draft'));
   });
 });
+
+describe('review fixes', () => {
+  it('signs in when localStorage is blocked', async () => {
+    const real = Object.getOwnPropertyDescriptor(window, 'localStorage')!;
+    Object.defineProperty(window, 'localStorage', { configurable: true, get() { throw new Error('blocked'); } });
+    try {
+      window.history.replaceState(null, '', '/?token=abc');
+      mockFetch(url => ok(url));
+      render(<App />);
+      expect(await screen.findByRole('heading', { name: 'Estate' })).toBeTruthy();
+    } finally { Object.defineProperty(window, 'localStorage', real); }
+  });
+
+  it('asks before Back or Sign out discard a half-filled form', async () => {
+    localStorage.setItem('vks-migration-studio.token', 'tok');
+    window.history.replaceState(null, '', '/audit');
+    window.history.pushState(null, '', '/estate');
+    mockFetch(url => url === '/api/audit?limit=200' ? { status: 200, body: { items: [] } } : ok(url));
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'New project' }));
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'draft' } });
+    window.history.replaceState(null, '', '/audit');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(window.location.pathname).toBe('/estate');
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('draft');
+    fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole('heading', { name: 'Estate' })).toBeTruthy();
+  });
+});

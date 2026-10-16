@@ -96,6 +96,8 @@ const initial: Migration = {
     // The audit log is append-only.
     await sql`create trigger audit_no_update before update on audit begin select raise(abort, 'audit log is append-only'); end`.execute(db);
     await sql`create trigger audit_no_delete before delete on audit begin select raise(abort, 'audit log is append-only'); end`.execute(db);
+    // INSERT OR REPLACE does not fire delete triggers unless recursive_triggers is on; refuse it outright.
+    await sql`create trigger audit_no_replace before insert on audit when new.seq is not null and exists (select 1 from audit where seq = new.seq) begin select raise(abort, 'audit log is append-only'); end`.execute(db);
   },
 };
 

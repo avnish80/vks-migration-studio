@@ -15,8 +15,9 @@ COPY engine/tsconfig.json ./
 COPY engine/src ./src
 RUN npm run build && npm prune --omit=dev
 
-# ---- ui: static build
-FROM ${NODE_IMAGE} AS ui
+# ---- ui: static build. Platform-independent output, so build natively (fast multi-arch builds).
+# The engine stage stays on the target platform because better-sqlite3 is a native module.
+FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS ui
 WORKDIR /src/ui
 COPY ui/package.json ui/package-lock.json ./
 RUN npm ci
@@ -41,7 +42,7 @@ RUN apt-get update \
  && apt-get purge -y curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --gid 10001 studio && useradd --uid 10001 --gid studio --home-dir /home/studio --create-home --shell /usr/sbin/nologin studio \
- && mkdir -p /data && chown studio:studio /data
+ && mkdir -p /data && chown studio:studio /data && chmod 0700 /data
 
 WORKDIR /app
 COPY --from=engine /src/engine/build ./engine/build
@@ -64,5 +65,5 @@ USER studio
 VOLUME ["/data"]
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
-  CMD ["node", "-e", "fetch('http://127.0.0.1:8080/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+  CMD ["node", "-e", "fetch('http://127.0.0.1:'+(process.env.STUDIO_PORT||8080)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
 CMD ["node", "engine/build/server.js"]

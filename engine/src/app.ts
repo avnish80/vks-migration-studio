@@ -31,6 +31,14 @@ export function hostname(host: string | undefined): string {
   return h.split(':')[0] ?? '';
 }
 
+/** True for any request the router treats as API: the matched route, or the decoded path. */
+export function isApiRequest(request: { routeOptions: { url?: string }; url: string }): boolean {
+  if (request.routeOptions.url?.startsWith('/api/')) return true;
+  let path = request.url.split('?')[0] ?? '';
+  try { path = decodeURIComponent(path); } catch { /* malformed escape: keep raw */ }
+  return path.toLowerCase().replace(/\/+/g, '/').startsWith('/api/');
+}
+
 export interface AppOptions { config: Config; db: DB; core: Core; token: string; logger?: boolean }
 
 /** Request URLs are logged without the sign-in token (it arrives once as ?token=). */
@@ -53,7 +61,9 @@ export async function buildApp({ config, db, core, token, logger = false }: AppO
       try { same = new URL(origin).host.toLowerCase() === (request.headers.host ?? '').toLowerCase(); } catch { same = false; }
       if (!same) return reply.code(403).send({ error: 'Forbidden', message: 'Cross-origin request refused.' });
     }
-    if (request.url.startsWith('/api/') && !request.routeOptions.config?.public) {
+    // Decide on the route the router matched, never on the raw URL: the router decodes
+    // percent-escapes, so /%61pi/projects matches /api/projects.
+    if (isApiRequest(request) && !request.routeOptions.config?.public) {
       const header = request.headers.authorization ?? '';
       const supplied = header.startsWith('Bearer ') ? header.slice(7) : undefined;
       if (!tokenMatches(token, supplied)) return reply.code(401).send({ error: 'Unauthorized', message: 'Missing or invalid access token. Open the link the engine printed at start-up.' });
@@ -62,7 +72,7 @@ export async function buildApp({ config, db, core, token, logger = false }: AppO
 
   app.addHook('onSend', async (request, reply, payload) => {
     for (const [k, v] of Object.entries(SECURITY_HEADERS)) reply.header(k, v);
-    if (request.url.startsWith('/api/')) reply.header('cache-control', 'no-store');
+    if (isApiRequest(request)) reply.header('cache-control', 'no-store');
     return payload;
   });
 
@@ -81,7 +91,7 @@ export async function buildApp({ config, db, core, token, logger = false }: AppO
   if (uiBuilt) await app.register(fastifyStatic, { root: config.uiDir, wildcard: false, index: ['index.html'] });
 
   app.setNotFoundHandler((request, reply) => {
-    if (request.url.startsWith('/api/') || request.method !== 'GET') return reply.code(404).send({ error: 'NotFound', message: 'No such endpoint.' });
+    if (isApiRequest(request) || !['GET', 'HEAD'].includes(request.method)) return reply.code(404).send({ error: 'NotFound', message: 'No such endpoint.' });
     // Client-side routes fall back to the UI shell.
     if (uiBuilt) return reply.type('text/html').sendFile('index.html');
     return reply.code(404).type('text/plain').send('UI not built. Run npm run build in ui/, or use the API.');
