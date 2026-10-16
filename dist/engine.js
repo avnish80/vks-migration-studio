@@ -4,7 +4,16 @@ const WORKLOADS=['Deployment','StatefulSet','DaemonSet','Job','CronJob','Pod','R
 const id=r=>[r.metadata?.namespace||'cluster',r.kind,r.metadata?.name||'?'].join('/');
 const pod=r=>r.kind==='CronJob'?r.spec?.jobTemplate?.spec?.template?.spec:r.kind==='Pod'?r.spec:r.spec?.template?.spec;
 function sanitize(v,key='') { if(Array.isArray(v))return v.map(x=>sanitize(x)); if(v&&typeof v==='object'){const o={};for(const [k,x] of Object.entries(v)){if(['__proto__','data','stringData','binaryData','value','status','managedFields','last-applied-configuration'].includes(k)||k==='kubectl.kubernetes.io/last-applied-configuration')continue;o[k]=sanitize(x,k);}return o;}return v; }
-function normalize(raw){let items=Array.isArray(raw)?raw:raw.items; if(!Array.isArray(items))throw Error('Expected a Kubernetes List, an array of resources, or collector inventory with items.');items=items.flatMap(x=>x?.kind?.endsWith('List')&&Array.isArray(x.items)?x.items:[x]);if(items.length>30000)throw Error('Maximum 30,000 resources. Export a smaller namespace scope.');if(items.some(x=>!x||typeof x.kind!=='string'||!x.metadata?.name))throw Error('Each resource needs kind and metadata.name.');return {items:sanitize(items),collection:sanitize(raw.collection||{}),sourceVersion:raw.sourceVersion||'Not supplied'};}
+function redactGitOps(r){
+ // Same rule as collect.py: GitOps fields that commonly carry plaintext credentials.
+ const spec=r&&typeof r.spec==='object'&&r.spec?r.spec:null;if(!spec)return r;
+ if(r.kind==='HelmRelease'){delete spec.values;delete spec.postRenderers;}
+ if(r.kind==='Kustomization'){delete spec.patches;if(spec.postBuild&&typeof spec.postBuild==='object')delete spec.postBuild.substitute;}
+ if(r.kind==='ApplicationSet'){delete spec.generators;delete spec.templatePatch;}
+ if(r.kind==='Application'||r.kind==='ApplicationSet')for(const s of [spec,spec.template?.spec].filter(x=>x&&typeof x==='object'))for(const src of [s.source,...(Array.isArray(s.sources)?s.sources:[])])if(src&&typeof src==='object'){for(const f of ['values','valuesObject','parameters','fileParameters'])if(src.helm&&typeof src.helm==='object')delete src.helm[f];for(const f of ['env','parameters'])if(src.plugin&&typeof src.plugin==='object')delete src.plugin[f];if(src.kustomize&&typeof src.kustomize==='object')delete src.kustomize.patches;}
+ return r;
+}
+function normalize(raw){let items=Array.isArray(raw)?raw:raw.items; if(!Array.isArray(items))throw Error('Expected a Kubernetes List, an array of resources, or collector inventory with items.');items=items.flatMap(x=>x?.kind?.endsWith('List')&&Array.isArray(x.items)?x.items:[x]);if(items.length>30000)throw Error('Maximum 30,000 resources. Export a smaller namespace scope.');if(items.some(x=>!x||typeof x.kind!=='string'||!x.metadata?.name))throw Error('Each resource needs kind and metadata.name.');return {items:sanitize(items).map(redactGitOps),collection:sanitize(raw.collection||{}),sourceVersion:raw.sourceVersion||'Not supplied'};}
 function analyze(raw,target={}){
 const inv=normalize(raw),resources=inv.items,findings=[],edges=[],images=new Map(), workloads=resources.filter(r=>WORKLOADS.includes(r.kind)&&r.kind!=='ReplicaSet');
 const add=(r,severity,category,title,evidence,action,validation)=>findings.push({id:'F'+String(findings.length+1).padStart(3,'0'),resource:r?id(r):'assessment',severity,category,title,evidence,action,validation:validation||'Target validation required',status:'Open'});
@@ -50,5 +59,9 @@ for(const img of images.values())if(!img.image.includes('@sha256:'))add(null,'Re
 const known=new Set(resources.map(id));for(const e of edges)if(!e.to.startsWith('image:')&&!e.to.startsWith('external:')&&!e.to.startsWith('storageclass:')&&!known.has(e.to))add(null,'Unknown','Dependencies','Referenced resource absent from inventory',`${e.from} → ${e.to}`,'Collect the missing resource or verify whether it exists out of scope.');
 return {schemaVersion:1,generatedAt:new Date().toISOString(),sourceVersion:inv.sourceVersion,target,resources,workloads:workloads.map(id),images:[...images.values()],findings,edges,coverage:inv.collection,productionReady:false};
 }
-root.MigrationEngine={analyze,normalize,sanitize,id,pod};if(typeof module!=='undefined')module.exports=root.MigrationEngine;
+// Labels GitOps and Helm reconcilers use to claim ownership of a top-level object.
+// app.kubernetes.io/instance is Argo CD's default tracking label (label tracking mode).
+const OWNERSHIP_LABELS=['app.kubernetes.io/instance','app.kubernetes.io/managed-by','argocd.argoproj.io/instance','helm.sh/chart'];
+function ownershipLabel(key){return OWNERSHIP_LABELS.includes(key)||/^(kustomize|helm|source)\.toolkit\.fluxcd\.io\//.test(key);}
+root.MigrationEngine={analyze,normalize,sanitize,id,pod,ownershipLabel};if(typeof module!=='undefined')module.exports=root.MigrationEngine;
 })(typeof window!=='undefined'?window:globalThis);

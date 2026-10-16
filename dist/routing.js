@@ -20,7 +20,7 @@ function generate(raw,options={}){
   untranslated.push(key);block('Annotation requires explicit destination implementation mapping: '+key);
  }
  changes.push({path:'metadata',before:'Source runtime metadata and annotations',after:'New resource metadata; annotations omitted and non-bookkeeping keys explicitly blocked'});
- const metadata=name=>({name,namespace,labels:Object.fromEntries(Object.entries(r.metadata.labels||{}).filter(([k])=>!['argocd.argoproj.io/instance','app.kubernetes.io/managed-by'].includes(k)))});
+ const metadata=name=>({name,namespace,labels:Object.fromEntries(Object.entries(r.metadata.labels||{}).filter(([k])=>!E.ownershipLabel(k)))});
  const backends=new Map();
  const services=(target?.items||[]).filter(x=>x.kind==='Service'&&ns(x)===namespace);
  function backend(b){if(b?.resource){block('Custom resource backend cannot be translated to a core Service reference.');return null;}const s=b?.service;if(!s?.name||!dns(s.name)){block('Backend Service name missing or invalid.');return null;}const observed=source.items.find(x=>x.kind==='Service'&&ns(x)===namespace&&x.metadata.name===s.name);let port=s.port?.number;
