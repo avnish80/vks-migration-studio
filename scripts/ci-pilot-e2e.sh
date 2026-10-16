@@ -3,21 +3,9 @@
 # engine API: register, collect, plan, validate, deploy, observe, inspect, clean up. Used by CI.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-work=$(mktemp -d)
-# Keep a copy of all output; on failure, surface the end of it (and the engine log) as GitHub
-# annotations, since job logs are not always readable where the failure is diagnosed.
-exec > >(tee "$work/out.log") 2>&1
-annotate() {
-  [ -n "${GITHUB_ACTIONS:-}" ] || return 0
-  # GitHub keeps only 10 annotations per step and drops long ones: send a few short summaries.
-  printf '::error title=last output::%s\n' "$(grep -v '^::' "$work/out.log" | tail -6 | cut -c1-200 | tr '\n' '|' | sed 's/%/%25/g')"
-  grep -i '"level":[56]0\|error' "$work/engine.log" 2>/dev/null | grep -v '"req"' | tail -2 | cut -c1-400 | while IFS= read -r l; do printf '::error title=engine::%s\n' "${l//%/%25}"; done
-  if [ -n "${run:-}" ]; then
-    api GET "/runs/$run" 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print("::error title=run::state=%s detail=%s" % (d["state"], (d.get("detail") or "")[:300])); [print("::error title=step::%s %s %s" % (s["step"], s["status"], json.dumps({k: v for k, v in s["summary"].items() if v and k in ("error","smoke","rollout","rows","actions")})[:500])) for s in d["steps"][-4:]]' || true
-  fi
-  return 0
-}
-trap 'status=$?; [ $status -ne 0 ] && annotate; exit $status' EXIT
+work="${PILOT_E2E_WORK:-$(mktemp -d)}"; mkdir -p "$work"
+# On failure, print the run's state and recorded steps (CI turns the end of the output into annotations).
+trap 'status=$?; if [ $status -ne 0 ] && [ -n "${run:-}" ]; then api GET "/runs/$run" | python3 -c "import json,sys; d=json.load(sys.stdin); print(\"RUN\", d[\"state\"], d.get(\"detail\")); [print(\"STEP\", s[\"step\"], s[\"status\"], json.dumps({k: v for k, v in s[\"summary\"].items() if v and k in (\"error\",\"smoke\",\"rollout\",\"rows\",\"actions\")})[:400]) for s in d[\"steps\"][-5:]]" || true; fi; echo "ENGINE LOG:"; grep -v "\"req\"\|request completed" "$work/engine.log" 2>/dev/null | tail -15 || true; exit $status' EXIT
 TOKEN=$(printf 'e%.0s' $(seq 1 40)); A="Authorization: Bearer $TOKEN"; J='content-type: application/json'; U=http://127.0.0.1:18090/api
 py() { python3 -c "import json,sys; d=json.load(sys.stdin); $1"; }
 api() { local method=$1 path=$2; shift 2; curl -fsS -X "$method" -H "$A" -H "$J" "$U$path" "$@"; }

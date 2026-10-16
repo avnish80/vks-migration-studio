@@ -26,4 +26,12 @@ jobs:
         with:
           cluster_name: target
       - name: Pilot end to end
-        run: scripts/ci-pilot-e2e.sh
+        run: |
+          set -o pipefail
+          if ! scripts/ci-pilot-e2e.sh > /tmp/pilot-e2e.log 2>&1; then
+            cat /tmp/pilot-e2e.log
+            # Job logs are not always reachable where failures are diagnosed: annotate the essentials.
+            grep -v '^::' /tmp/pilot-e2e.log | tail -12 | cut -c1-400 | while IFS= read -r l; do echo "::error title=pilot::${l//%/%25}"; done
+            exit 1
+          fi
+          cat /tmp/pilot-e2e.log
