@@ -1,0 +1,11 @@
+{
+  "name": "VKS Migration Studio",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:22-bookworm",
+  "hostRequirements": { "cpus": 2 },
+  "postCreateCommand": "cd engine && npm ci && cd ../ui && npm ci",
+  "postAttachCommand": "bash scripts/codespace-start.sh",
+  "forwardPorts": [8080],
+  "portsAttributes": {
+    "8080": { "label": "Migration Studio", "onAutoForward": "notify" }
+  }
+}

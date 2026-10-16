@@ -17,11 +17,12 @@ async function main(): Promise<void> {
   const app = await buildApp({ config, db, core, token, logger: true });
   await app.listen({ host: config.host, port: config.port });
   const shown = config.host === '0.0.0.0' || config.host === '::' ? '127.0.0.1' : config.host;
+  const base = config.publicUrl ?? `http://${shown}:${config.port}`;
   process.stdout.write(`\nVKS Migration Studio ${VERSION}\n` +
     (applied.length ? `Database migrations applied: ${applied.join(', ')}\n` : '') +
-    (created ? `\nOpen this link to sign in (shown once; the token is stored in ${path.join(config.dataDir, 'token')}):\n  http://${shown}:${config.port}/?token=${token}\n\n`
-             : config.token ? `\nOpen http://${shown}:${config.port}/ and sign in with the token set in STUDIO_TOKEN.\n\n`
-             : `\nOpen http://${shown}:${config.port}/ and sign in with the token stored in ${path.join(config.dataDir, 'token')}.\n\n`));
+    (created ? `\nOpen this link to sign in (shown once; the token is stored in ${path.join(config.dataDir, 'token')}):\n  ${base}/?token=${token}\n\n`
+             : config.token ? `\nOpen ${base}/ and sign in with the token set in STUDIO_TOKEN.\n\n`
+             : `\nOpen ${base}/ and sign in with the token stored in ${path.join(config.dataDir, 'token')}.\n\n`));
   const stop = async () => { await app.close(); await db.destroy(); process.exit(0); };
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
