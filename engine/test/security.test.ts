@@ -58,6 +58,19 @@ describe('access control', () => {
     expect(same.statusCode).toBe(201);
   });
 
+  it('accepts writes from an explicitly allowed HTTPS origin behind a proxy (Codespaces)', async () => {
+    ({ app } = await makeApp({ allowedHosts: 'demo-8080.app.github.dev' }));
+    const post = (host: string, origin: string) => app.inject({ method: 'POST', url: '/api/projects', headers: { authorization: auth.authorization, host, origin }, payload: { name: 'x' } });
+    // Proxy keeps the forwarded host, or rewrites it to localhost: both are accepted.
+    expect((await post('demo-8080.app.github.dev', 'https://demo-8080.app.github.dev')).statusCode).toBe(201);
+    expect((await post('localhost:8080', 'https://demo-8080.app.github.dev')).statusCode).toBe(201);
+    // Not allowed: plain HTTP for the allowed name, other names, and look-alikes.
+    expect((await post('localhost:8080', 'http://demo-8080.app.github.dev')).statusCode).toBe(403);
+    expect((await post('localhost:8080', 'https://other-8080.app.github.dev')).statusCode).toBe(403);
+    expect((await post('localhost:8080', 'https://demo-8080.app.github.dev.evil.example')).statusCode).toBe(403);
+    expect((await post('evil-8080.app.github.dev', 'https://evil-8080.app.github.dev')).statusCode).toBe(403);
+  });
+
   it('sets security headers and no-store on API responses', async () => {
     ({ app } = await makeApp());
     const res = await app.inject({ url: '/api/version', headers: auth });

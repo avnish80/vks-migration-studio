@@ -58,7 +58,12 @@ export async function buildApp({ config, db, core, token, logger = false }: AppO
     const origin = request.headers.origin;
     if (origin && !['GET', 'HEAD', 'OPTIONS'].includes(request.method)) {
       let same = false;
-      try { same = new URL(origin).host.toLowerCase() === (request.headers.host ?? '').toLowerCase(); } catch { same = false; }
+      // Same origin, or an origin whose host name was explicitly allowed (a proxy such as
+      // GitHub Codespaces port forwarding may rewrite the Host header).
+      try {
+        const o = new URL(origin);
+        same = o.host.toLowerCase() === (request.headers.host ?? '').toLowerCase() || (o.protocol === 'https:' && config.allowedHosts.includes(o.hostname.toLowerCase()));
+      } catch { same = false; }
       if (!same) return reply.code(403).send({ error: 'Forbidden', message: 'Cross-origin request refused.' });
     }
     // Decide on the route the router matched, never on the raw URL: the router decodes

@@ -6,6 +6,18 @@ Migration Studio analyses a source cluster inventory, compares it with a VKS tar
 
 > **Status: pre-release.** The automated suites use mocked cluster interfaces. Live VKS integration testing is still pending, and the production gate is permanently closed. Do not use this for production migrations.
 
+## Try it in your browser (GitHub Codespaces)
+
+No local installs needed: everything runs in a cloud VM on your GitHub account.
+
+1. On the repository page, choose **Code** → **Codespaces** → **Create codespace on main**.
+2. Wait for the first set-up to finish (a few minutes). A terminal then builds and starts the engine and prints a sign-in link ending in `app.github.dev/?token=…`.
+3. Open that link. The address is private to your GitHub account.
+
+Your projects are kept in `.studio-data/` inside the Codespace and survive stopping and restarting it. Stop the Codespace when you're done so it doesn't use your monthly hours. A Codespace cannot reach clusters in your own network, so it is for trying the UI; from milestone 1.1, run the engine where it can reach your clusters.
+
+To restart the engine yourself in the Codespace terminal: `bash scripts/codespace-start.sh`.
+
 ## Run the engine (1.0.0-alpha)
 
 The engine is a container that serves the new UI and API on your machine. It reads your kubeconfig and never stores cluster credentials.
