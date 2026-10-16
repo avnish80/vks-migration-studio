@@ -98,9 +98,9 @@ label.check { display: flex; gap: 8px; align-items: flex-start; font-weight: 400
 label.check input { width: auto; margin-top: 3px; }
 pre.code { background: var(--nav-bg); padding: 12px; border-radius: var(--radius); overflow: auto; max-height: 360px; font-size: 12px; }
 ol.steps { list-style: none; padding: 0; margin: 0; border-left: 2px solid var(--border-soft); }
-ol.steps li { position: relative; padding: 4px 0 14px 18px; }
-ol.steps li::before { content: ''; position: absolute; left: -7px; top: 9px; width: 12px; height: 12px; border-radius: 50%; background: var(--success); }
-ol.steps li.bad::before { background: var(--danger); }
+ol.steps > li { position: relative; padding: 4px 0 14px 18px; }
+ol.steps > li::before { content: ''; position: absolute; left: -7px; top: 9px; width: 12px; height: 12px; border-radius: 50%; background: var(--success); }
+ol.steps > li.bad::before { background: var(--danger); }
 ol.steps p { margin: 4px 0; }
 .badge.large { font-size: 13px; padding: 4px 12px; }
 .badge.run-PilotPassed, .badge.run-Cleaned, .badge.run-Absent, .badge.run-Validated, .badge.run-Inspected { border-color: var(--success); color: var(--success); }
@@ -139,6 +139,7 @@ table.spaced { margin-bottom: 24px; }
 .findings { list-style: none; padding: 0; margin: 0; }
 .findings li { padding: 10px 0; border-bottom: 1px solid var(--border-soft); }
 .findings p { margin: 4px 0; }
+.findings .mono, ol.steps .mono { overflow-wrap: anywhere; }
 ul.plain { list-style: none; padding: 0; margin: 4px 0; }
 ul.plain li { padding: 2px 0; }
 details.card summary { cursor: pointer; }
