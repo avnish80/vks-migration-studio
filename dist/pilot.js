@@ -11,6 +11,9 @@ function generate(raw,options={}){
  const manifests={apiVersion:'v1',kind:'List',items:[]};
  if(!work||work.kind!=='Deployment'){block('Choose an existing Deployment. StatefulSets, Jobs, DaemonSets and arbitrary custom resources are outside this pilot scope.');return finish();}
  const ns=work.metadata.namespace||'default',pod=E.pod(work),target=options.target?E.normalize(options.target):null;
+ const label=/^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$/,subdomain=v=>typeof v==='string'&&v.length<=253&&v.split('.').every(x=>label.test(x));
+ if(!label.test(ns))block('Namespace name is not a valid Kubernetes name; the inventory may be edited or corrupted.');
+ if(!subdomain(work.metadata.name))block('Deployment name is not a valid Kubernetes name; the inventory may be edited or corrupted.');
  if(work.apiVersion!=='apps/v1')block('Deployment must use apps/v1. Update desired-state API first.');
  if(!pod?.containers?.length)block('Pod template has no containers.');
  if(!work.spec?.selector||(!work.spec.selector.matchLabels&&!work.spec.selector.matchExpressions))block('Deployment selector missing; recover the complete desired-state manifest.');
@@ -59,6 +62,7 @@ function generate(raw,options={}){
   if((r.spec.type||'ClusterIP')!=='ClusterIP'){omitted.push(E.id(r));block('Matching Service is not ClusterIP; load-balancer and NodePort translation require a separate mapping.',E.id(r));continue;}
   const peers=items.filter(x=>['Deployment','StatefulSet','DaemonSet','Pod','ReplicaSet','Job','CronJob'].includes(x.kind)&&sameNS(x)&&E.id(x)!==E.id(work)&&Object.entries(r.spec.selector).every(([k,v])=>(x.spec?.template?.metadata?.labels||x.spec?.jobTemplate?.spec?.template?.metadata?.labels||x.metadata.labels||{})[k]===v));
   if(peers.length){omitted.push(E.id(r));block('Service selector matches additional source resources. Review shared routing before exporting the Service.',E.id(r));continue;}
+  if(!/^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$/.test(r.metadata.name||''))block('Service name is not a valid Kubernetes name; the inventory may be edited or corrupted.',E.id(r));
   const service={apiVersion:'v1',kind:'Service',metadata:metadata(r),spec:clone(r.spec)};service.metadata.namespace=ns;
   for(const key of ['clusterIP','clusterIPs','ipFamilies','ipFamilyPolicy','healthCheckNodePort'])if(key in service.spec&&!(key==='clusterIP'&&service.spec[key]==='None')){delete service.spec[key];changes.push({resource:E.id(r),path:'spec.'+key,before:'Source-assigned networking',after:'Destination allocation/default'});}
   if(r.spec.externalIPs?.length||r.spec.loadBalancerIP||r.spec.loadBalancerClass)block('Service has infrastructure-bound addresses or controller configuration; review manually.',E.id(r));
