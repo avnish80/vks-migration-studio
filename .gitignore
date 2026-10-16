@@ -1,0 +1,15 @@
+# Runner outputs and local inventories must never be committed.
+*.receipt.json
+pilot-run*.json
+pilot-observation*.json
+pilot-inspection*.json
+pilot-cleanup*.json
+target-preflight*.json
+image-results*.json
+inventory*.json
+!dist/demo.json
+*.kubeconfig
+kubeconfig*
+__pycache__/
+node_modules/
+.DS_Store

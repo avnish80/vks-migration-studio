@@ -1,7 +1,46 @@
 # VKS Migration Studio
+
+Plan and pilot the move of Kubernetes workloads onto VMware vSphere Kubernetes Service (VKS).
+
+Migration Studio analyses a source cluster inventory, compares it with a VKS target, and prepares a reviewable, isolated single-workload pilot. Separate local runners validate, deploy, observe, inspect and clean up that pilot against an explicit kubeconfig context.
+
+> **Status: pre-release.** The automated suites use mocked cluster interfaces. Live VKS integration testing is still pending, and the production gate is permanently closed. Do not use this for production migrations.
+
+## Run the UI locally
+
+No build or npm install is needed. From the repository root:
+
+```bash
+python3 -m http.server 8080 --bind 127.0.0.1 --directory dist   # Windows: py -3 -m http.server ...
+```
+
+Open http://127.0.0.1:8080. A demo inventory loads automatically. The browser never contacts a cluster and stores no credentials; save your work explicitly as project JSON.
+
+## Run the local tools
+
+The scripts in `dist/` run on your workstation and need Python 3. `collect.py`, `target-preflight.py` and `pilot-runner.py` also need `kubectl`; `image-runner.py` needs Skopeo. Each takes an explicit `--context`. See the release notes below for each tool's commands and safety checks.
+
+## Run the tests
+
+```bash
+./scripts/run-tests.sh
+```
+
+This needs Node.js 22 and Python 3. CI runs the same script on every push and pull request.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
+
+This is a community project. It uses only public Kubernetes APIs and open-source tools, and is not a VMware or Broadcom product.
+
+## Original design notes
+
 Read-only inventory analysis MVP. Buildless browser application with no external dependencies.
 
 Serve `dist/` using any static web server. The browser makes no cluster API calls and stores no cluster credentials, server uploads or automatic browser persistence. Downloaded local runners use explicit kubeconfig contexts; the pilot runner can create scoped resources only through its separately invoked deploy command. Explicit downloadable project files provide save/resume. Import processing occurs in browser memory.
+
+# Release notes
 
 ## Guided action checklist and focused pilot workflow (v0.20)
 The dashboard now provides a migration action checklist derived from the same current handoff review. Filter Project, Selected pilot and Inventory work; inspect priority items and open the relevant workbench directly. Existing-run recovery moves to the top when unresolved. Status labels distinguish recorded scope, no generated blockers, reported evidence and required independent review; there is no readiness percentage or manual completion toggle.
