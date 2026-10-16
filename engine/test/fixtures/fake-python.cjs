@@ -16,7 +16,7 @@ const objects = plan.preflight.manifests.items.map(r => ({ kind: r.kind, name: r
 let report;
 const want = scenario[mode] ?? ({ inspect: 'ReviewRequired', cleanup: 'Absent' }[mode] ?? 'Passed');
 if (mode === 'validate' || mode === 'deploy') {
-  const runId = receipt?.runId ?? 'runner-run-id';
+  const runId = receipt?.runId ?? require('node:crypto').randomUUID();
   report = { ...base, kind: 'PilotExecutionResult', runId, mode, status: want === 'Passed' ? 'Passed' : 'Failed', preflightPassed: true, created: [], uncertain: [] };
   if (mode === 'deploy' && want === 'Passed') report.created = objects;
   if (mode === 'deploy' && want === 'FailedCreated') { report.created = objects.slice(0, 1); report.error = 'Rollout failed or timed out'; }
@@ -26,7 +26,9 @@ if (mode === 'validate' || mode === 'deploy') {
 } else if (mode === 'inspect') {
   report = { ...base, kind: 'PilotInspectionResult', runId: receipt.runId, inspectionId: 'insp-' + Date.now(), status: want, rows: objects.map(o => ({ ...o, state: want === 'Absent' ? 'Absent' : 'Owned' })), dependents: [] };
 } else if (mode === 'cleanup') {
-  report = { ...base, kind: 'PilotCleanupResult', runId: receipt.runId, status: want, rows: [], actions: [] };
+  // Like the real runner: the confirmation must be the run ID on the target objects.
+  const ok = opt('--confirm-run') === receipt.runId && rest.includes('--ack-external-state');
+  report = { ...base, kind: 'PilotCleanupResult', runId: receipt.runId, status: ok ? want : 'Failed', rows: [], actions: [], ...(ok ? {} : { error: 'Cleanup needs exact --confirm-run' }) };
 }
 fs.writeFileSync(opt('--output'), JSON.stringify(report));
 process.exit(report.status === 'Passed' || report.status === 'Absent' || report.status === 'ReviewRequired' ? 0 : 1);

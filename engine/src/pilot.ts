@@ -237,6 +237,10 @@ export function pilotHandler(db: DB, config: Config): JobHandler {
         if (step === 'observe' || step === 'inspect' || step === 'cleanup') {
           const receipt = await deployReceipt(db, config, runId);
           if (!receipt) throw new JobFailure('No deploy receipt exists for this run, so there is nothing to inspect.');
+          // A partial receipt from an interrupted deploy also carries the label on the target objects.
+          if (typeof receipt.runId === 'string' && /^[a-z0-9-]{1,80}$/.test(receipt.runId) && receipt.runId !== run.run_label) {
+            await db.updateTable('runs').set({ run_label: receipt.runId }).where('id', '=', runId).execute();
+          }
           args.push('--receipt', write('receipt.json', receipt));
         }
         if (step === 'cleanup') {
@@ -250,9 +254,12 @@ export function pilotHandler(db: DB, config: Config): JobHandler {
         const status = String(report.status ?? 'Unknown');
         const state = nextState(step, report);
         const detail = typeof report.error === 'string' ? report.error.slice(0, 500) : null;
+        // The runner labels the objects it creates with its own run ID; that is the ID operators
+        // confirm for clean-up and see on the target, so the run adopts it once a deploy starts.
+        const label = step === 'deploy' && typeof report.runId === 'string' && /^[a-z0-9-]{1,80}$/.test(report.runId) ? report.runId : undefined;
         await db.transaction().execute(async trx => {
           await trx.insertInto('evidence').values({ id: crypto.randomUUID(), run_id: runId, kind: `${step}:${status}`, input_hash: plan.input_hash, blob_hash: await putBlob(trx as unknown as DB, report), observed_at: new Date().toISOString() }).execute();
-          await trx.updateTable('runs').set({ state, status_detail: detail, updated_at: new Date().toISOString() }).where('id', '=', runId).execute();
+          await trx.updateTable('runs').set({ state, status_detail: detail, updated_at: new Date().toISOString(), ...(label ? { run_label: label } : {}) }).where('id', '=', runId).execute();
           await record(trx as unknown as DB, `pilot.${step}.${status.toLowerCase()}`, `run/${runId}`, detail ? { detail } : {});
         });
         await syncWorkload(db, run.workload_id);

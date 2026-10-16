@@ -107,16 +107,19 @@ describe('pilot runs', () => {
     await call('POST', `/api/runs/${runId}/inspect`, {});
     run = await settle(runId);
     expect(run.state, JSON.stringify(run.detail)).toBe('Inspected');
-    expect((await call('POST', `/api/runs/${runId}/cleanup`, { confirmRun: 'wrong', acknowledgeExternalState: true })).statusCode).toBe(400);
-    expect((await call('POST', `/api/runs/${runId}/cleanup`, { confirmRun: runId })).statusCode).toBe(400);
+    // The run adopted the runner's run ID, which labels the objects on the target.
+    const label = run.runLabel;
+    expect(label).not.toBe(runId);
+    expect((await call('POST', `/api/runs/${runId}/cleanup`, { confirmRun: runId, acknowledgeExternalState: true })).statusCode).toBe(400);
+    expect((await call('POST', `/api/runs/${runId}/cleanup`, { confirmRun: label })).statusCode).toBe(400);
     scenario({ cleanup: 'Absent' });
-    expect((await call('POST', `/api/runs/${runId}/cleanup`, { confirmRun: runId, acknowledgeExternalState: true })).statusCode).toBe(202);
+    expect((await call('POST', `/api/runs/${runId}/cleanup`, { confirmRun: label, acknowledgeExternalState: true })).statusCode).toBe(202);
     run = await settle(runId);
     expect(run.state).toBe('Cleaned');
     expect(run.closed).toBe(true);
     expect(run.steps.map((s: { step: string; status: string }) => `${s.step}:${s.status}`)).toEqual(['validate:Passed', 'deploy:Passed', 'inspect:ReviewRequired', 'cleanup:Absent']);
     // The original deploy receipt is what inspection and clean-up were given.
-    expect(calls().filter(a => a[1] === 'cleanup')[0]).toEqual(expect.arrayContaining(['--confirm-run', runId, '--ack-external-state']));
+    expect(calls().filter(a => a[1] === 'cleanup')[0]).toEqual(expect.arrayContaining(['--confirm-run', label, '--ack-external-state']));
     // A new run is allowed once the previous one is closed.
     expect((await call('POST', `/api/plans/${p.id}/runs`, { acknowledgePrerequisites: true })).statusCode).toBe(201);
     const audit = (await call('GET', '/api/audit?limit=100')).json().items.map((a: { action: string }) => a.action);
@@ -171,12 +174,14 @@ describe('pilot runs', () => {
     expect(await recoverRuns(db)).toBe(1);
     let run = (await call('GET', `/api/runs/${runId}`)).json();
     expect(run.state).toBe('NeedsReview');
+    expect(run.runLabel).toBe(runId);
     expect(run.actions).toEqual(['inspect']);
     await call('POST', `/api/runs/${runId}/inspect`, {});
     run = await settle(runId);
     expect(run.state).toBe('Inspected');
     const receiptArg = calls().filter(a => a[1] === 'inspect').at(-1)!;
     expect(receiptArg).toContain('--receipt');
+    expect(run.runLabel).toBe('partial-run');   // adopted from the partial receipt
   });
 
   it('discards a validated run that was never deployed', async () => {
