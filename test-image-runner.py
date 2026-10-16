@@ -29,8 +29,15 @@ class RunnerTests(unittest.TestCase):
         p=self.plan();first=p['rows'][0]
         onto=copy.deepcopy(p);onto['rows'].append({**first,'source':'b','sourceCanonical':first['destination'],'destination':'harbor.example.com/p/b:1'})
         shared=copy.deepcopy(p);shared['rows'].append({**first,'source':'b','sourceCanonical':'docker.io/library/b:1'})
+        same=copy.deepcopy(p);same['rows'].append({**first,'source':'docker.io/library/nginx:x'})
+        with patch.object(r,'command',side_effect=[RAW,RAW,RAW,RAW]):self.assertEqual([x['status'] for x in r.run(same)['results']],['Registry digest match']*2)
         for bad,message in [(onto,'also a source'),(shared,'same destination')]:
             with patch.object(r,'command') as call:
                 with self.assertRaisesRegex(ValueError,message):r.run(bad,copy=True)
                 call.assert_not_called()
+    def test_browser_generated_plan_is_accepted(self):
+        # Plans exported by images.js must be runnable; same image under two spellings shares one destination.
+        js="const I=require('./dist/images.js');process.stdout.write(JSON.stringify(I.plan([{image:'nginx:1.25'},{image:'docker.io/library/nginx:1.25'}],{policy:'Mirror to Harbor',prefix:'harbor.example.com/proj'})))"
+        plan=json.loads(subprocess.check_output(['node','-e',js],text=True));self.assertEqual(plan['errors'],[])
+        with patch.object(r,'command',return_value=RAW.encode() if isinstance(RAW,str) else RAW):self.assertEqual({x['status'] for x in r.run(plan)['results']},{'Registry digest match'})
 unittest.main()
