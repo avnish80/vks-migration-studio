@@ -26,7 +26,7 @@ The scripts in `dist/` run on your workstation and need Python 3. `collect.py`, 
 ./scripts/run-tests.sh
 ```
 
-This needs Node.js 22 and Python 3. CI runs the same script on every push and pull request.
+This needs Node.js 22, Python 3 and PyYAML (`pip install pyyaml`, used by the GitOps test). CI runs the same script on every push and pull request.
 
 ## License
 
