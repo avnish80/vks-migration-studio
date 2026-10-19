@@ -31,7 +31,7 @@ async function setup() {
   ({ app, db } = made);
   return made;
 }
-const call = (method: 'GET' | 'POST' | 'PATCH' | 'DELETE', url: string, payload?: unknown) => app.inject({ method, url, headers: auth, ...(payload === undefined ? {} : { payload: payload as object }) });
+const call = (method: 'GET' | 'POST' | 'PATCH' | 'DELETE' | 'PUT', url: string, payload?: unknown) => app.inject({ method, url, headers: auth, ...(payload === undefined ? {} : { payload: payload as object }) });
 async function waitForJob(id: string) {
   for (let i = 0; i < 200; i++) {
     const job = (await call('GET', `/api/jobs/${id}`)).json();
@@ -199,7 +199,7 @@ describe('migrations', () => {
     await (db1 as any).insertInto('clusters').values({ id: 'c', context_name: 'ctx', role: 'target', observed_uid: 'u', last_seen_at: null, created_at: now }).execute();
     await db1.insertInto('blobs').values({ hash: 'h', size: 0, compressed: Buffer.alloc(0), created_at: now }).execute();
     await (db1 as any).insertInto('snapshots').values({ id: 's', project_id: 'p', cluster_id: 'c', blob_hash: 'h', collected_at: now, coverage: '{}' }).execute();
-    expect(await migrate(db1)).toEqual(['002_inventory', '003_pilots']);
+    expect(await migrate(db1)).toEqual(['002_inventory', '003_pilots', '004_platform']);
     const s = await db1.selectFrom('snapshots').selectAll().executeTakeFirstOrThrow();
     expect(s).toMatchObject({ id: 's', side: 'target', origin: 'collected', cluster_id: 'c' });
     await db1.destroy();
@@ -285,7 +285,7 @@ describe('migration 002', () => {
     await new Migrator({ db: db1, provider }).migrateTo('001_initial');
     const now = new Date().toISOString();
     for (const id of ['c1', 'c2']) await (db1 as any).insertInto('clusters').values({ id, context_name: 'same', role: 'source', observed_uid: id, last_seen_at: null, created_at: now }).execute();
-    expect(await migrate(db1)).toEqual(['002_inventory', '003_pilots']);
+    expect(await migrate(db1)).toEqual(['002_inventory', '003_pilots', '004_platform']);
     const rows = await db1.selectFrom('clusters').select(['id', 'context_name', 'retired_at']).orderBy('id').execute();
     expect(rows[0]).toMatchObject({ id: 'c1', context_name: 'same', retired_at: null });
     expect(rows[1]!.context_name).toMatch(/^same#retired-/);
@@ -302,7 +302,41 @@ describe('migration 002', () => {
     const cols = (await sql<{ name: string }>`pragma table_info(clusters)`.execute(db1)).rows.map(r => r.name);
     expect(cols).not.toContain('name');   // earlier changes rolled back
     await sql`alter table jobs drop column progress`.execute(db1);
-    expect(await migrate(db1)).toEqual(['002_inventory', '003_pilots']);   // and the step can be retried
+    expect(await migrate(db1)).toEqual(['002_inventory', '003_pilots', '004_platform']);   // and the step can be retried
     await db1.destroy();
+  });
+});
+
+describe('platform add-ons', () => {
+  const dep = (namespace: string, name: string, meta: object = {}) => ({ apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name, namespace, ...meta }, spec: { selector: { matchLabels: { app: name } }, template: { metadata: { labels: { app: name } }, spec: { containers: [{ name, image: 'example.net/' + name + ':1' }] } } } });
+  const estate = { kind: 'List', items: [
+    dep('shop', 'web'), dep('cert-manager', 'cert-manager'), dep('istio-system', 'istiod'), dep('vmware-system-csi', 'csi-controller'),
+    dep('tanzu-system-monitoring', 'kube-state-metrics'), dep('pinniped-concierge', 'pinniped-concierge'), dep('velero', 'velero'),
+    dep('monitoring', 'telegraf', { labels: { 'kapp.k14s.io/app': '1700000000' } }), dep('vks-fleet-test', 'headlamp'),
+  ] };
+
+  it('tags platform add-ons with a reason, and the operator can override either way', async () => {
+    await setup();
+    const pid = await project();
+    expect((await call('POST', `/api/projects/${pid}/snapshots`, { side: 'source', inventory: estate })).statusCode).toBe(201);
+    const items = (await call('GET', `/api/projects/${pid}/workloads`)).json().items as { id: string; resource: string; platform: string | null }[];
+    const by = (r: string) => items.find(w => w.resource === r)!;
+    expect(items.filter(w => !w.platform).map(w => w.resource).sort()).toEqual(['shop/Deployment/web', 'vks-fleet-test/Deployment/headlamp']);
+    expect(by('cert-manager/Deployment/cert-manager').platform).toContain('cert-manager');
+    expect(by('monitoring/Deployment/telegraf').platform).toContain('Carvel');
+    expect(by('istio-system/Deployment/istiod').platform).toContain('Istio');
+
+    // Override: an add-on treated as an application, and an application marked as platform.
+    const velero = by('velero/Deployment/velero'), fleet = by('vks-fleet-test/Deployment/headlamp');
+    expect((await call('PUT', `/api/projects/${pid}/workloads/${velero.id}/classification`, { as: 'app' })).json().platform).toBeNull();
+    expect((await call('PUT', `/api/projects/${pid}/workloads/${fleet.id}/classification`, { as: 'platform' })).json().platform).toBe('Marked as a platform add-on');
+    expect((await call('PUT', `/api/projects/${pid}/workloads/${fleet.id}/classification`, { as: 'bogus' })).statusCode).toBe(400);
+    // The override survives the next inventory.
+    await call('POST', `/api/projects/${pid}/snapshots`, { side: 'source', inventory: estate });
+    const again = (await call('GET', `/api/projects/${pid}/workloads`)).json().items as { resource: string; platform: string | null; platformOverride: string | null }[];
+    expect(again.find(w => w.resource === 'velero/Deployment/velero')!.platform).toBeNull();
+    expect(again.find(w => w.resource === 'vks-fleet-test/Deployment/headlamp')!.platformOverride).toBe('platform');
+    const audit = (await call('GET', '/api/audit?limit=20')).json().items.map((a: { action: string }) => a.action);
+    expect(audit).toContain('workload.classification');
   });
 });

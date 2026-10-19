@@ -163,6 +163,17 @@ const pilots: Migration = {
   },
 };
 
-export const migrations: Record<string, Migration> = { '001_initial': initial, '002_inventory': inventory, '003_pilots': pilots };
+const platform: Migration = {
+  async up(db: Kysely<any>) {
+    await db.transaction().execute(async trx => {
+      // Why a workload looks like a platform add-on rather than an application (null: an application),
+      // set when an inventory is stored; and the operator's override ('app' or 'platform').
+      await trx.schema.alterTable('workloads').addColumn('platform', 'text').execute();
+      await trx.schema.alterTable('workloads').addColumn('platform_override', 'text').execute();
+    });
+  },
+};
+
+export const migrations: Record<string, Migration> = { '001_initial': initial, '002_inventory': inventory, '003_pilots': pilots, '004_platform': platform };
 
 export const provider: MigrationProvider = { getMigrations: async () => migrations };

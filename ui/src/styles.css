@@ -195,3 +195,9 @@ tr:last-child td { border-bottom: 0; }
   .tiles { grid-template-columns: repeat(2, 1fr); }
   table { display: block; overflow-x: auto; }
 }
+
+.segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; margin: 16px 0 4px; }
+.segmented button { background: none; border: 0; padding: 6px 14px; font: inherit; color: var(--fg); cursor: pointer; }
+.segmented button + button { border-left: 1px solid var(--border); }
+.segmented button.on { background: var(--action); color: var(--action-fg); }
+.classification p { margin: 4px 0; }
