@@ -66,7 +66,7 @@ export async function storeSnapshot(db: DB, c: Core, input: StoreInput): Promise
 async function refreshWorkloads(db: DB, projectId: string, snapshotId: string, analysis: Analysis, now: string, inv: Inventory): Promise<void> {
   const meta = new Map<string, { labels?: Record<string, string>; annotations?: Record<string, string> }>();
   for (const r of inv.items as { kind?: string; metadata?: { name?: string; namespace?: string; labels?: Record<string, string>; annotations?: Record<string, string> } }[]) {
-    if (r.kind && r.metadata?.name) meta.set(`${r.metadata.namespace ?? 'default'}/${r.kind}/${r.metadata.name}`, r.metadata);
+    if (r.kind && r.metadata?.name) meta.set(`${r.metadata.namespace || 'cluster'}/${r.kind}/${r.metadata.name}`, r.metadata);   // the analysis's resource id format
   }
   const counts = new Map<string, { blockers: number; reviews: number }>();
   for (const f of analysis.findings) {

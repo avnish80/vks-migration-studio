@@ -169,10 +169,10 @@ function Workloads({ items, platform, onOpen }: { items: Workload[]; platform: b
       <div className="filters">
         <h3>Workloads</h3>
         <input aria-label="Search workloads" placeholder="Search namespace or name" value={q} onChange={e => setQ(e.target.value)} />
-        <select aria-label="Filter by state" value={state} onChange={e => setState(e.target.value)}>
+        {!platform && <select aria-label="Filter by state" value={state} onChange={e => setState(e.target.value)}>
           <option value="">All states</option>
           {states.map(s => <option key={s} value={s}>{STATE_LABEL[s] ?? s}</option>)}
-        </select>
+        </select>}
       </div>
       <table>
         <thead><tr><th>Namespace</th><th>Workload</th><th>Kind</th>{platform ? <th>Why</th> : <><th>State</th><th>Blockers</th><th>Review</th></>}</tr></thead>

@@ -243,7 +243,7 @@ const DEFAULT_OPTIONS: PilotOptions = { cleanupPollMs: 5_000, cleanupWaitMs: 2 *
 export function pilotHandler(db: DB, config: Config, options: PilotOptions = DEFAULT_OPTIONS): JobHandler {
   return {
     retryable: false,   // pilot steps write to a cluster: never repeated automatically
-    async run({ id: jobId, payload, progress }) {
+    async run({ id: jobId, payload, progress, stopping }) {
       const { runId, step, confirmWorkload, confirmRun } = payload as { runId: string; step: Step; confirmWorkload?: string; confirmRun?: string };
       const run = await db.selectFrom('runs').selectAll().where('id', '=', runId).executeTakeFirstOrThrow();
       // The request marked the run busy for this step; anything else means it changed since (and this job must not act).
@@ -290,7 +290,7 @@ export function pilotHandler(db: DB, config: Config, options: PilotOptions = DEF
         const status = String(report.status ?? 'Unknown');
         let state = nextState(step, report);
         // After a clean-up, an inspection that finds nothing left closes the run as Cleaned.
-        if (step === 'inspect' && state === 'Absent' && (await lastEvidence(db, runId, 'cleanup'))) state = 'Cleaned';
+        if (step === 'inspect' && state === 'Absent' && (await deletionRequested(db, runId))) state = 'Cleaned';
         // Deletions requested but still finishing (foreground deletion waits for ReplicaSets and Pods):
         // the run stays busy while this job re-inspects, read-only, until they are gone.
         const settling = step === 'cleanup' && state === 'CleanupPending';
@@ -303,7 +303,7 @@ export function pilotHandler(db: DB, config: Config, options: PilotOptions = DEF
           await trx.updateTable('runs').set({ state: settling ? 'Cleaning' : state, status_detail: detail, updated_at: new Date().toISOString(), ...(label ? { run_label: label } : {}) }).where('id', '=', runId).execute();
           await record(trx as unknown as DB, `pilot.${step}.${status.toLowerCase()}`, `run/${runId}`, detail ? { detail } : {});
         });
-        if (settling) state = await settleCleanup({ db, config, options, runId, context, planFile, receiptFile, inputHash: plan.input_hash, prefix: path.join(dir, `${String(n + 1).padStart(3, '0')}-cleanup-${jobId.slice(0, 8)}`), progress });
+        if (settling) state = await settleCleanup({ db, config, options, runId, context, planFile, receiptFile, inputHash: plan.input_hash, prefix: path.join(dir, `${String(n + 1).padStart(3, '0')}-cleanup-${jobId.slice(0, 8)}`), progress, stopping });
         await syncWorkload(db, run.workload_id);
         return { step, status, state };
       } catch (error) {
@@ -329,15 +329,17 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
  * Re-inspects (read-only) after a clean-up until every pilot object is gone. Waiting is the only
  * outcome while objects are absent or terminating; anything else stops for review. Nothing is forced.
  */
-async function settleCleanup(c: { db: DB; config: Config; options: PilotOptions; runId: string; context: string; planFile: string; receiptFile: string; inputHash: string; prefix: string; progress: (m: string) => Promise<void> }): Promise<RunState> {
+async function settleCleanup(c: { db: DB; config: Config; options: PilotOptions; runId: string; context: string; planFile: string; receiptFile: string; inputHash: string; prefix: string; progress: (m: string) => Promise<void>; stopping: () => boolean }): Promise<RunState> {
   const { db, runId } = c;
   const deadline = Date.now() + c.options.cleanupWaitMs;
-  for (let attempt = 1; Date.now() < deadline; attempt++) {
+  for (let attempt = 1; Date.now() + c.options.cleanupPollMs < deadline && !c.stopping(); attempt++) {
     await c.progress(`Deletion requested; waiting for Kubernetes to finish removing the pilot (check ${attempt})`);
     await sleep(c.options.cleanupPollMs);
+    if (c.stopping()) break;
     const output = `${c.prefix}-inspect-${attempt}.json`;
-    await runRunner(c.config, ['inspect', '--context', c.context, '--plan', c.planFile, '--receipt', c.receiptFile, '--output', output], 5 * 60_000);
-    let report: { status?: string; rows?: { state?: string }[] } & Record<string, unknown>;
+    // Each check is a quick read; bound it so the whole wait stays close to its limit.
+    await runRunner(c.config, ['inspect', '--context', c.context, '--plan', c.planFile, '--receipt', c.receiptFile, '--output', output], Math.max(30_000, deadline - Date.now()));
+    let report: { status?: string; rows?: { state?: string }[]; dependents?: { state?: string }[] } & Record<string, unknown>;
     try { report = JSON.parse(fs.readFileSync(output, 'utf8')); } catch { throw new JobFailure('A follow-up inspection after clean-up wrote no readable receipt. Inspect the target before anything else.'); }
     const status = String(report.status ?? 'Unknown');
     await db.insertInto('evidence').values({ id: crypto.randomUUID(), run_id: runId, kind: `inspect:${status}`, input_hash: c.inputHash, blob_hash: await putBlob(db, report), observed_at: new Date().toISOString() }).execute();
@@ -346,7 +348,12 @@ async function settleCleanup(c: { db: DB; config: Config; options: PilotOptions;
       await record(db, 'pilot.cleanup.settled', `run/${runId}`, { checks: attempt });
       return 'Cleaned';
     }
-    const stillDeleting = status === 'ReviewRequired' && Array.isArray(report.rows) && report.rows.every(r => r.state === 'Absent' || r.state === 'Terminating');
+    // Still deleting: every pilot object is gone or terminating, and either an owner is still terminating
+    // (foreground deletion: its ReplicaSets and Pods follow) or every remaining dependent is terminating.
+    // Pods that outlive their owners without terminating were orphaned and need a person.
+    const rows = Array.isArray(report.rows) ? report.rows : [], dependents = Array.isArray(report.dependents) ? report.dependents : [];
+    const stillDeleting = status === 'ReviewRequired' && rows.length > 0 && rows.every(r => r.state === 'Absent' || r.state === 'Terminating')
+      && (rows.some(r => r.state === 'Terminating') || dependents.every(d => d.state === 'Terminating'));
     if (!stillDeleting) {
       const detail = 'After clean-up, a pilot object is no longer being deleted or no longer matches this run. Inspect it before anything else.';
       await setRun(db, runId, 'NeedsReview', detail);
@@ -355,8 +362,20 @@ async function settleCleanup(c: { db: DB; config: Config; options: PilotOptions;
     }
   }
   const minutes = Math.max(1, Math.round(c.options.cleanupWaitMs / 60_000));
-  await setRun(db, runId, 'CleanupPending', `Deletion is still in progress after ${minutes} minute${minutes > 1 ? 's' : ''}. Inspect again later; nothing is forced and no finalizers are removed.`);
+  await setRun(db, runId, 'CleanupPending', c.stopping()
+    ? 'The engine stopped while waiting for the deletion to finish. Inspect again; nothing is forced and no finalizers are removed.'
+    : `Deletion is still in progress after ${minutes} minute${minutes > 1 ? 's' : ''}. Inspect again later; nothing is forced and no finalizers are removed.`);
   return 'CleanupPending';
+}
+
+/** Whether a clean-up of this run actually requested a deletion (a refused clean-up deletes nothing). */
+async function deletionRequested(db: DB, runId: string): Promise<boolean> {
+  const rows = await db.selectFrom('evidence').select('blob_hash').where('run_id', '=', runId).where('kind', 'like', 'cleanup:%').execute();
+  for (const r of rows) {
+    const report = await getBlob<{ actions?: { outcome?: string }[] }>(db, r.blob_hash);
+    if (report.actions?.some(a => a.outcome === 'Requested')) return true;
+  }
+  return false;
 }
 
 async function closeNothingCreated(db: DB, runId: string, workloadId: string, detail: string) {

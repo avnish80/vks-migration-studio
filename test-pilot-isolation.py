@@ -62,6 +62,14 @@ class TrackingLabels(base.Runner):
         except ValueError as e:self.assertNotIn('tracking labels',str(e))
 for name in [n for n in dir(base.Runner) if n.startswith('test_')]:
     if name not in TrackingLabels.__dict__:setattr(TrackingLabels,name,None)
+class ExposureAnnotations(base.Runner):
+    def test_validate_refuses_service_annotations_that_expose_the_pilot(self):
+        for key in ['tailscale.com/expose','service.cilium.io/global','service.beta.kubernetes.io/aws-load-balancer-type']:
+            p=copy.deepcopy(base.FIXTURE);p['preflight']['manifests']['items'][1]['metadata'].setdefault('annotations',{})[key]='true'
+            p['binding']=json.dumps({k:p[k] for k in ['planRevision','workload','settings','preflight','blockers','prerequisites']})
+            with self.assertRaisesRegex(ValueError,'expose the pilot'):r.validate_plan(p,'target')
+for name in [n for n in dir(base.Runner) if n.startswith('test_')]:
+    if name not in ExposureAnnotations.__dict__:setattr(ExposureAnnotations,name,None)
 
 class ConsumerEdgeCases(unittest.TestCase):
     def reasons(self,items):return r.consumers(items,'app','web',['web'])

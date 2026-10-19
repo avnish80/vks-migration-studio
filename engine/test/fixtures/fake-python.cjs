@@ -19,8 +19,8 @@ let report;
 // A list plays one entry per call, then repeats the last ("Terminating" is an inspection that finds objects still deleting).
 const pick = v => { if (!Array.isArray(v)) return v; const f = path.join(dir, mode + '.count'); const i = fs.existsSync(f) ? Number(fs.readFileSync(f, 'utf8')) : 0; fs.writeFileSync(f, String(i + 1)); return v[Math.min(i, v.length - 1)]; };
 const picked = pick(scenario[mode]);
-const terminating = picked === 'Terminating';
-const want = terminating ? 'ReviewRequired' : picked ?? ({ inspect: 'ReviewRequired', cleanup: 'Absent' }[mode] ?? 'Passed');
+const terminating = picked === 'Terminating', orphaned = picked === 'Orphaned';
+const want = terminating || orphaned ? 'ReviewRequired' : picked ?? ({ inspect: 'ReviewRequired', cleanup: 'Absent' }[mode] ?? 'Passed');
 if (mode === 'validate' || mode === 'deploy') {
   const runId = receipt?.runId ?? require('node:crypto').randomUUID();
   report = { ...base, kind: 'PilotExecutionResult', runId, mode, status: want === 'Passed' ? 'Passed' : 'Failed', preflightPassed: true, created: [], uncertain: [] };
@@ -30,11 +30,11 @@ if (mode === 'validate' || mode === 'deploy') {
 } else if (mode === 'observe') {
   report = { ...base, kind: 'PilotObservationResult', runId: receipt.runId, status: want };
 } else if (mode === 'inspect') {
-  report = { ...base, kind: 'PilotInspectionResult', runId: receipt.runId, inspectionId: 'insp-' + Date.now(), status: want, rows: objects.map(o => ({ ...o, state: want === 'Absent' ? 'Absent' : terminating ? 'Terminating' : 'Owned' })), dependents: [] };
+  report = { ...base, kind: 'PilotInspectionResult', runId: receipt.runId, inspectionId: 'insp-' + Date.now(), status: want, rows: objects.map(o => ({ ...o, state: want === 'Absent' || orphaned ? 'Absent' : terminating ? 'Terminating' : 'Owned' })), dependents: orphaned ? [{ kind: 'Pod', name: 'web-1', state: 'Present' }] : [] };
 } else if (mode === 'cleanup') {
   // Like the real runner: the confirmation must be the run ID on the target objects.
   const ok = opt('--confirm-run') === receipt.runId && rest.includes('--ack-external-state');
-  report = { ...base, kind: 'PilotCleanupResult', runId: receipt.runId, status: ok ? want : 'Failed', rows: [], actions: [], ...(ok ? {} : { error: 'Cleanup needs exact --confirm-run' }) };
+  report = { ...base, kind: 'PilotCleanupResult', runId: receipt.runId, status: ok ? want : 'Failed', rows: [], actions: ok ? objects.map(o => ({ ...o, outcome: 'Requested' })) : [], ...(ok ? {} : { error: 'Cleanup needs exact --confirm-run' }) };
 }
 fs.writeFileSync(opt('--output'), JSON.stringify(report));
 process.exit(report.status === 'Passed' || report.status === 'Absent' || report.status === 'ReviewRequired' ? 0 : 1);

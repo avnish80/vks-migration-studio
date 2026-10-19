@@ -4,7 +4,7 @@ import type { DB } from './db/index.js';
 import { record } from './audit.js';
 
 export type JobState = 'Queued' | 'Running' | 'Succeeded' | 'Failed';
-export interface JobContext { id: string; payload: any; progress: (message: string) => Promise<void> }
+export interface JobContext { id: string; payload: any; progress: (message: string) => Promise<void>; /** True once the engine is shutting down: long waits should end early. */ stopping: () => boolean }
 export interface JobHandler { run: (ctx: JobContext) => Promise<unknown>; /** Safe to run again after a crash (read-only work). */ retryable: boolean; maxAttempts?: number }
 
 /** A user-facing failure: the message is shown as is. Anything else becomes a generic message. */
@@ -84,6 +84,7 @@ export class JobRunner {
         id: job.id,
         payload: JSON.parse(job.payload),
         progress: async message => { await this.db.updateTable('jobs').set({ progress: message, updated_at: new Date().toISOString() }).where('id', '=', job.id).execute(); },
+        stopping: () => this.stopped,
       });
       await this.finish(job.id, 'Succeeded', { result: JSON.stringify(result ?? null) });
       await record(this.db, `job.${job.type}.succeeded`, `job/${job.id}`);

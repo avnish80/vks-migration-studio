@@ -71,14 +71,16 @@ function generate(raw,options={}){
    const note=(path,before)=>changes.push({resource:E.id(r),path,before,after:'Removed: pilot copy is ClusterIP; map exposure at cutover'});
    service.spec.type='ClusterIP';note('spec.type',sourceType);
    for(const key of ['externalTrafficPolicy','loadBalancerIP','loadBalancerClass','loadBalancerSourceRanges','allocateLoadBalancerNodePorts','healthCheckNodePort','externalIPs'])if(key in service.spec){delete service.spec[key];note('spec.'+key,'Source exposure setting');}
-   for(const port of service.spec.ports||[])if(port.nodePort){delete port.nodePort;note('spec.ports.'+(port.name||port.port)+'.nodePort',String(port.nodePort));}
-   for(const key of Object.keys(service.metadata.annotations||{}))if(/aws|azure|gke|load.?balancer|external-dns|metallb|ako\.|avi|nsx/i.test(key)){delete service.metadata.annotations[key];note('metadata.annotations.'+key,'Source load-balancer or DNS annotation');}
+   for(const port of service.spec.ports||[])if(port.nodePort){const was=String(port.nodePort);delete port.nodePort;note('spec.ports.'+(port.name||port.port)+'.nodePort',was);}
+   // Annotations on an exposed Service mostly drive exposure (load balancers, DNS, tailnets, cluster meshes): the pilot copy keeps none.
+   for(const key of Object.keys(service.metadata.annotations||{})){delete service.metadata.annotations[key];note('metadata.annotations.'+key,'Source annotation on an exposed Service');}
+   if(service.metadata.annotations&&!Object.keys(service.metadata.annotations).length)delete service.metadata.annotations;
    need(E.id(r),'Exposure: '+sourceType+' on the source; the pilot copy is ClusterIP and receives no external traffic. At cutover, map the VKS load balancer (NSX or Avi), addresses, health checks, source ranges and DNS.');
   }
   for(const key of ['clusterIP','clusterIPs','ipFamilies','ipFamilyPolicy','healthCheckNodePort'])if(key in service.spec&&!(key==='clusterIP'&&service.spec[key]==='None')){delete service.spec[key];changes.push({resource:E.id(r),path:'spec.'+key,before:'Source-assigned networking',after:'Destination allocation/default'});}
   if(service.spec.externalIPs?.length||service.spec.loadBalancerIP||service.spec.loadBalancerClass)block('Service has infrastructure-bound addresses or controller configuration; review manually.',E.id(r));
   for(const port of service.spec.ports||[])if(port.nodePort){delete port.nodePort;block('ClusterIP Service contains a nodePort assignment; review desired-state schema.',E.id(r));}
-  for(const key of Object.keys(service.metadata.annotations||{}))if(/aws|azure|gke|load.?balancer|external-dns/i.test(key))block(`Service annotation needs target-specific review: ${key}.`,E.id(r));
+  for(const key of Object.keys(service.metadata.annotations||{}))if(/aws|azure|gke|load.?balancer|external-dns|tailscale\.com\/|cilium\.io|io\.cilium\/|metallb\.|ako\.vmware\.com/i.test(key))block(`Service annotation needs target-specific review: ${key}.`,E.id(r));
   manifests.items.push(service);
  }
  for(const r of items.filter(sameNS))if(['Ingress','HTTPRoute','Gateway','HorizontalPodAutoscaler','PodDisruptionBudget','NetworkPolicy'].includes(r.kind)){omitted.push(E.id(r));need(E.id(r),'Review and provision separately. This generator exports only the selected Deployment and isolated ClusterIP Services; routing, policy, disruption and scaling behavior remain unverified.');}

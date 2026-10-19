@@ -313,6 +313,7 @@ describe('platform add-ons', () => {
     dep('shop', 'web'), dep('cert-manager', 'cert-manager'), dep('istio-system', 'istiod'), dep('vmware-system-csi', 'csi-controller'),
     dep('tanzu-system-monitoring', 'kube-state-metrics'), dep('pinniped-concierge', 'pinniped-concierge'), dep('velero', 'velero'),
     dep('monitoring', 'telegraf', { labels: { 'kapp.k14s.io/app': '1700000000' } }), dep('vks-fleet-test', 'headlamp'),
+    { ...dep('', 'package-agent', { labels: { 'kapp.k14s.io/app': '1' } }), metadata: { name: 'package-agent', labels: { 'kapp.k14s.io/app': '1' } } },
   ] };
 
   it('tags platform add-ons with a reason, and the operator can override either way', async () => {
@@ -325,6 +326,7 @@ describe('platform add-ons', () => {
     expect(by('cert-manager/Deployment/cert-manager').platform).toContain('cert-manager');
     expect(by('monitoring/Deployment/telegraf').platform).toContain('Carvel');
     expect(by('istio-system/Deployment/istiod').platform).toContain('Istio');
+    expect(items.find(w => w.resource.endsWith('/Deployment/package-agent'))?.platform, JSON.stringify(items.map(w => w.resource))).toContain('Carvel');
 
     // Override: an add-on treated as an application, and an application marked as platform.
     const velero = by('velero/Deployment/velero'), fleet = by('vks-fleet-test/Deployment/headlamp');
