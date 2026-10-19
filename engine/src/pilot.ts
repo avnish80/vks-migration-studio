@@ -231,8 +231,16 @@ async function deployReceipt(db: DB, config: Config, runId: string): Promise<Rec
   } catch { return undefined; }
 }
 
+export interface PilotOptions {
+  /** After a clean-up whose deletions are still in progress, re-inspect this often… */
+  cleanupPollMs: number;
+  /** …for at most this long, before handing back to a manual inspection. */
+  cleanupWaitMs: number;
+}
+const DEFAULT_OPTIONS: PilotOptions = { cleanupPollMs: 5_000, cleanupWaitMs: 2 * 60_000 };
+
 /** Job handler: runs one pilot step with the runner and records its receipt. */
-export function pilotHandler(db: DB, config: Config): JobHandler {
+export function pilotHandler(db: DB, config: Config, options: PilotOptions = DEFAULT_OPTIONS): JobHandler {
   return {
     retryable: false,   // pilot steps write to a cluster: never repeated automatically
     async run({ id: jobId, payload, progress }) {
@@ -249,7 +257,9 @@ export function pilotHandler(db: DB, config: Config): JobHandler {
       // Deploy happens once per run; other steps can repeat, and an interrupted attempt leaves its file behind.
       const output = path.join(dir, step === 'deploy' ? 'deploy.json' : `${String(n + 1).padStart(3, '0')}-${step}-${jobId.slice(0, 8)}.json`);
       if (fs.existsSync(output)) throw new JobFailure('A receipt for this step already exists. Inspect the run before continuing.');
-      const args = [step, '--context', context, '--plan', write('plan.json', planDoc), '--output', output];
+      const planFile = write('plan.json', planDoc);
+      const args = [step, '--context', context, '--plan', planFile, '--output', output];
+      let receiptFile = '';
       try {
         if (step === 'deploy') {
           const v = await lastEvidence(db, runId, 'validate');
@@ -266,7 +276,8 @@ export function pilotHandler(db: DB, config: Config): JobHandler {
           if (typeof receipt.runId === 'string' && /^[a-z0-9-]{1,80}$/.test(receipt.runId) && receipt.runId !== run.run_label) {
             await db.updateTable('runs').set({ run_label: receipt.runId }).where('id', '=', runId).execute();
           }
-          args.push('--receipt', write('receipt.json', receipt));
+          receiptFile = write('receipt.json', receipt);
+          args.push('--receipt', receiptFile);
         }
         if (step === 'cleanup') {
           const i = await lastEvidence(db, runId, 'inspect');
@@ -277,16 +288,22 @@ export function pilotHandler(db: DB, config: Config): JobHandler {
         let report: Record<string, unknown>;
         try { report = JSON.parse(fs.readFileSync(output, 'utf8')); } catch { throw new JobFailure('The pilot runner wrote no readable receipt. Inspect the target before anything else.'); }
         const status = String(report.status ?? 'Unknown');
-        const state = nextState(step, report);
+        let state = nextState(step, report);
+        // After a clean-up, an inspection that finds nothing left closes the run as Cleaned.
+        if (step === 'inspect' && state === 'Absent' && (await lastEvidence(db, runId, 'cleanup'))) state = 'Cleaned';
+        // Deletions requested but still finishing (foreground deletion waits for ReplicaSets and Pods):
+        // the run stays busy while this job re-inspects, read-only, until they are gone.
+        const settling = step === 'cleanup' && state === 'CleanupPending';
         const detail = typeof report.error === 'string' ? report.error.slice(0, 500) : null;
         // The runner labels the objects it creates with its own run ID; that is the ID operators
         // confirm for clean-up and see on the target, so the run adopts it once a deploy starts.
         const label = step === 'deploy' && typeof report.runId === 'string' && /^[a-z0-9-]{1,80}$/.test(report.runId) ? report.runId : undefined;
         await db.transaction().execute(async trx => {
           await trx.insertInto('evidence').values({ id: crypto.randomUUID(), run_id: runId, kind: `${step}:${status}`, input_hash: plan.input_hash, blob_hash: await putBlob(trx as unknown as DB, report), observed_at: new Date().toISOString() }).execute();
-          await trx.updateTable('runs').set({ state, status_detail: detail, updated_at: new Date().toISOString(), ...(label ? { run_label: label } : {}) }).where('id', '=', runId).execute();
+          await trx.updateTable('runs').set({ state: settling ? 'Cleaning' : state, status_detail: detail, updated_at: new Date().toISOString(), ...(label ? { run_label: label } : {}) }).where('id', '=', runId).execute();
           await record(trx as unknown as DB, `pilot.${step}.${status.toLowerCase()}`, `run/${runId}`, detail ? { detail } : {});
         });
+        if (settling) state = await settleCleanup({ db, config, options, runId, context, planFile, receiptFile, inputHash: plan.input_hash, prefix: path.join(dir, `${String(n + 1).padStart(3, '0')}-cleanup-${jobId.slice(0, 8)}`), progress });
         await syncWorkload(db, run.workload_id);
         return { step, status, state };
       } catch (error) {
@@ -304,6 +321,42 @@ export function pilotHandler(db: DB, config: Config): JobHandler {
       }
     },
   };
+}
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+/**
+ * Re-inspects (read-only) after a clean-up until every pilot object is gone. Waiting is the only
+ * outcome while objects are absent or terminating; anything else stops for review. Nothing is forced.
+ */
+async function settleCleanup(c: { db: DB; config: Config; options: PilotOptions; runId: string; context: string; planFile: string; receiptFile: string; inputHash: string; prefix: string; progress: (m: string) => Promise<void> }): Promise<RunState> {
+  const { db, runId } = c;
+  const deadline = Date.now() + c.options.cleanupWaitMs;
+  for (let attempt = 1; Date.now() < deadline; attempt++) {
+    await c.progress(`Deletion requested; waiting for Kubernetes to finish removing the pilot (check ${attempt})`);
+    await sleep(c.options.cleanupPollMs);
+    const output = `${c.prefix}-inspect-${attempt}.json`;
+    await runRunner(c.config, ['inspect', '--context', c.context, '--plan', c.planFile, '--receipt', c.receiptFile, '--output', output], 5 * 60_000);
+    let report: { status?: string; rows?: { state?: string }[] } & Record<string, unknown>;
+    try { report = JSON.parse(fs.readFileSync(output, 'utf8')); } catch { throw new JobFailure('A follow-up inspection after clean-up wrote no readable receipt. Inspect the target before anything else.'); }
+    const status = String(report.status ?? 'Unknown');
+    await db.insertInto('evidence').values({ id: crypto.randomUUID(), run_id: runId, kind: `inspect:${status}`, input_hash: c.inputHash, blob_hash: await putBlob(db, report), observed_at: new Date().toISOString() }).execute();
+    if (status === 'Absent') {
+      await setRun(db, runId, 'Cleaned', null);
+      await record(db, 'pilot.cleanup.settled', `run/${runId}`, { checks: attempt });
+      return 'Cleaned';
+    }
+    const stillDeleting = status === 'ReviewRequired' && Array.isArray(report.rows) && report.rows.every(r => r.state === 'Absent' || r.state === 'Terminating');
+    if (!stillDeleting) {
+      const detail = 'After clean-up, a pilot object is no longer being deleted or no longer matches this run. Inspect it before anything else.';
+      await setRun(db, runId, 'NeedsReview', detail);
+      await record(db, 'pilot.cleanup.review', `run/${runId}`, { status });
+      return 'NeedsReview';
+    }
+  }
+  const minutes = Math.max(1, Math.round(c.options.cleanupWaitMs / 60_000));
+  await setRun(db, runId, 'CleanupPending', `Deletion is still in progress after ${minutes} minute${minutes > 1 ? 's' : ''}. Inspect again later; nothing is forced and no finalizers are removed.`);
+  return 'CleanupPending';
 }
 
 async function closeNothingCreated(db: DB, runId: string, workloadId: string, detail: string) {

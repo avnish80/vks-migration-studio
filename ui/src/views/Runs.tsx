@@ -11,7 +11,7 @@ const STATE_HELP: Record<string, string> = {
   NeedsRecovery: 'The pilot did not pass and objects may exist on the target. Inspect it.',
   NeedsReview: 'Something needs checking before anything else. Inspect the target.',
   Inspected: 'Inspection recorded. Clean up within 9 minutes, or inspect again.',
-  CleanupPending: 'Deletion was requested and is still in progress. Inspect again shortly.',
+  CleanupPending: 'Deletion was requested and Kubernetes is still finishing it. Nothing is forced. Inspect again in a little while; the run closes when the objects are gone.',
   Cleaned: 'The pilot objects were deleted from the target.',
   Absent: 'No pilot objects exist on the target.',
   NothingCreated: 'The deploy failed before creating anything.',
@@ -149,12 +149,13 @@ function StepItem({ step }: { step: RunStep }) {
     rows?: { kind: string; name: string; state: string; detail: string }[]; actions?: { kind: string; name: string; outcome: string }[];
   };
   const ok = ['Passed', 'Absent', 'ReviewRequired'].includes(step.status);
+  const wait = step.step === 'cleanup' && step.status === 'Pending';   // deletion requested, still finishing
   return (
-    <li className={ok ? 'ok' : 'bad'}>
-      <div><strong>{step.step}</strong> <span className={`badge ${ok ? 'state-Assessed' : 'state-Blocked'}`}>{step.status}</span> <span className="hint">{new Date(step.observedAt).toLocaleString()}</span></div>
+    <li className={ok ? 'ok' : wait ? 'wait' : 'bad'}>
+      <div><strong>{step.step}</strong> <span className={`badge ${ok ? 'state-Assessed' : wait ? 'step-wait' : 'state-Blocked'}`}>{wait ? 'Deleting' : step.status}</span> <span className="hint">{new Date(step.observedAt).toLocaleString()}</span></div>
       {s.error && <p className="text-danger">{s.error}</p>}
-      {s.rollout && <p className="hint">Rollout: {s.rollout.status} — {s.rollout.detail}</p>}
-      {s.smoke && <p className="hint">Smoke test: {s.smoke.status} — {s.smoke.detail}</p>}
+      {s.rollout && s.rollout.status !== 'NotRun' && <p className="hint">Rollout: {s.rollout.status} — {s.rollout.detail}</p>}
+      {s.smoke && s.smoke.status !== 'NotRun' && <p className="hint">Smoke test: {s.smoke.status} — {s.smoke.detail}</p>}
       {s.created && s.created.length > 0 && <p className="hint">Created: {s.created.map(c => `${c.kind}/${c.name}`).join(', ')}</p>}
       {s.uncertain && s.uncertain.length > 0 && <p className="text-danger">Outcome uncertain for: {s.uncertain.join(', ')}</p>}
       {s.rows && <ul className="plain">{s.rows.map((r, i) => <li key={i}><span className="mono">{r.kind}/{r.name}</span> · {r.state} <span className="hint">{r.detail}</span></li>)}</ul>}
