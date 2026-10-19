@@ -36,6 +36,7 @@ def validate_plan(p,context):
         seen.add(key);name(meta.get('name'))
         for m in [meta,r.get('spec',{}).get('template',{}).get('metadata',{})]:
             if any(re.search(r'argocd|helm\.sh|fluxcd|external-dns',k,re.I) for k in m.get('annotations',{})):raise ValueError('Inherited reconciliation/external DNS annotations require review')
+        if kind=='Service' and any(re.search(r'tailscale\.com/|cilium\.io|io\.cilium/|load.?balancer|metallb\.|ako\.vmware\.com',k,re.I) for k in meta.get('annotations',{})):raise ValueError('Service annotations that can expose the pilot outside the cluster require review')
         if kind=='Service' and (r.get('apiVersion')!='v1' or r['spec'].get('type','ClusterIP')!='ClusterIP' or any(r['spec'].get(k) for k in ['externalIPs','loadBalancerIP','loadBalancerClass','externalName']) or not r['spec'].get('selector') or not matches(labels,{'matchLabels':r['spec']['selector']}) or any(x.get('nodePort') for x in r['spec'].get('ports',[]))):raise ValueError('Only isolated ClusterIP Services are supported')
     if any(pod.get(k) for k in ['hostNetwork','hostPID','hostIPC','ephemeralContainers']):raise ValueError('Unsupported Pod namespace or container scope')
     if d.get('metadata',{}).get('ownerReferences') or d['spec']['template']['metadata'].get('annotations',{}).get('k8s.v1.cni.cncf.io/networks'):raise ValueError('Owned/network-attached workload requires another path')

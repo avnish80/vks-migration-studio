@@ -10,7 +10,7 @@ Migration Studio analyses a source cluster inventory, compares it with a VKS tar
 
 Use this when you can't run containers locally, or when the engine must reach clusters on your network. You need `kubectl` with admin access to the clusters involved.
 
-1. **Publish the image (once per release).** On GitHub, **Releases** → **Draft a new release** → tag `v1.2.0-alpha.1` on `main` → **Publish**. CI builds and signs `ghcr.io/avnish80/vks-migration-studio:1.2.0-alpha.1`. The first time, make the package public: **Packages** → **vks-migration-studio** → **Package settings** → **Change visibility**. If your cluster can't pull from `ghcr.io`, copy the image into your Harbor and change `image:` in the manifest.
+1. **Publish the image (once per release).** On GitHub, **Releases** → **Draft a new release** → tag `v1.3.0-alpha.1` on `main` → **Publish**. CI builds and signs `ghcr.io/avnish80/vks-migration-studio:1.3.0-alpha.1`. The first time, make the package public: **Packages** → **vks-migration-studio** → **Package settings** → **Change visibility**. If your cluster can't pull from `ghcr.io`, copy the image into your Harbor and change `image:` in the manifest.
 2. **Create a read-only collector login for each cluster to read** (source and target):
    ```bash
    scripts/collector-kubeconfig.sh my-source-context source.kubeconfig

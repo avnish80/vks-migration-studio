@@ -18,7 +18,7 @@ export async function makeApp(options: { uiDir?: string; allowedHosts?: string }
   const db = openDatabase(':memory:');
   await migrate(db);
   const core = loadCore(config.coreDir);
-  const jobs = new JobRunner(db, { collect: collectHandler(db, core, config), pilot: pilotHandler(db, config) }, 60_000);
+  const jobs = new JobRunner(db, { collect: collectHandler(db, core, config), pilot: pilotHandler(db, config, { cleanupPollMs: 10, cleanupWaitMs: 400 }) }, 60_000);
   const app = await buildApp({ config, db, core, token: TOKEN, jobs });
   return { app, db, dataDir, jobs, config, core };
 }

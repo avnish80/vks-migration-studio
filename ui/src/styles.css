@@ -101,6 +101,7 @@ ol.steps { list-style: none; padding: 0; margin: 0; border-left: 2px solid var(-
 ol.steps > li { position: relative; padding: 4px 0 14px 18px; }
 ol.steps > li::before { content: ''; position: absolute; left: -7px; top: 9px; width: 12px; height: 12px; border-radius: 50%; background: var(--success); }
 ol.steps > li.bad::before { background: var(--danger); }
+ol.steps > li.wait::before { background: var(--warn-border); }
 ol.steps p { margin: 4px 0; }
 .badge.large { font-size: 13px; padding: 4px 12px; }
 .badge.run-PilotPassed, .badge.run-Cleaned, .badge.run-Absent, .badge.run-Validated, .badge.run-Inspected { border-color: var(--success); color: var(--success); }
@@ -131,7 +132,7 @@ table.spaced { margin-bottom: 24px; }
 .badge.target { border-color: var(--success); color: var(--success); }
 .badge.state-Blocked, .badge.sev-Blocker, .badge.change-Removed { border-color: var(--danger); color: var(--danger); background: var(--danger-bg); }
 .badge.state-Assessed { border-color: var(--success); color: var(--success); }
-.badge.sev-Review, .badge.change-Changed, .badge.change-Recreated { border-color: var(--warn-border); background: var(--warn-bg); color: var(--warn-fg); }
+.badge.sev-Review, .badge.step-wait, .badge.run-CleanupPending, .badge.change-Changed, .badge.change-Recreated { border-color: var(--warn-border); background: var(--warn-bg); color: var(--warn-fg); }
 .badge.change-Added { border-color: var(--success); color: var(--success); }
 .filters { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; flex-wrap: wrap; }
 .filters h3 { margin: 0 auto 0 0; }
@@ -194,3 +195,9 @@ tr:last-child td { border-bottom: 0; }
   .tiles { grid-template-columns: repeat(2, 1fr); }
   table { display: block; overflow-x: auto; }
 }
+
+.segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; margin: 16px 0 4px; }
+.segmented button { background: none; border: 0; padding: 6px 14px; font: inherit; color: var(--fg); cursor: pointer; }
+.segmented button + button { border-left: 1px solid var(--border); }
+.segmented button.on { background: var(--action); color: var(--action-fg); }
+.classification p { margin: 4px 0; }

@@ -8,6 +8,7 @@ import type { JobRunner } from '../jobs.js';
 import { jobView } from '../jobs.js';
 import { record } from '../audit.js';
 import { diffSnapshot, InventoryError, latestAnalysis, storeSnapshot } from '../inventory.js';
+import { effectivePlatform } from '../platform.js';
 
 const side = { enum: ['source', 'target'] } as const;
 const notFound = (reply: FastifyReply, what = 'project') => reply.code(404).send({ error: 'NotFound', message: `No ${what} with that id.` });
@@ -92,8 +93,19 @@ export function inventoryRoutes(app: FastifyInstance, db: DB, core: Core, config
       snapshotId: latest?.snapshotId ?? null,
       findingsBySeverity: sev,
       estateFindings: estate.length,
-      items: rows.map(w => ({ id: w.id, resource: w.resource_id, kind: w.kind, namespace: w.namespace, name: w.name, state: w.state, blockers: w.blockers, reviews: w.reviews, updatedAt: w.updated_at })),
+      items: rows.map(w => ({ id: w.id, resource: w.resource_id, kind: w.kind, namespace: w.namespace, name: w.name, state: w.state, blockers: w.blockers, reviews: w.reviews, updatedAt: w.updated_at, platform: effectivePlatform(w.platform, w.platform_override), platformDetected: w.platform, platformOverride: w.platform_override })),
     };
+  });
+
+  /** Override whether a workload is an application or a platform add-on ('app', 'platform', or null for automatic). */
+  app.put<{ Params: { id: string; wid: string }; Body: { as: 'app' | 'platform' | null } }>('/api/projects/:id/workloads/:wid/classification', {
+    schema: { body: { type: 'object', additionalProperties: false, required: ['as'], properties: { as: { anyOf: [{ type: 'string', enum: ['app', 'platform'] }, { type: 'null' }] } } } },
+  }, async (request, reply) => {
+    const w = await db.selectFrom('workloads').selectAll().where('id', '=', request.params.wid).where('project_id', '=', request.params.id).executeTakeFirst();
+    if (!w) return notFound(reply, 'workload');
+    await db.updateTable('workloads').set({ platform_override: request.body.as }).where('id', '=', w.id).execute();
+    await record(db, 'workload.classification', `workload/${w.id}`, { resource: w.resource_id, as: request.body.as ?? 'automatic' });
+    return { id: w.id, platform: effectivePlatform(w.platform, request.body.as), platformDetected: w.platform, platformOverride: request.body.as };
   });
 
   /** Findings for one workload, plus findings on the resources it is connected to. */

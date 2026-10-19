@@ -105,4 +105,30 @@ describe('project page', () => {
     expect(await screen.findByText('Node-local storage')).toBeTruthy();
     expect(screen.getByText(/Move to a PVC/)).toBeTruthy();
   });
+
+  it('keeps platform add-ons apart from applications, and lets the operator reclassify', async () => {
+    window.history.replaceState(null, '', '/estate?project=p1');
+    let manager: string | null = null;
+    const list = () => ({ status: 200, body: { snapshotId: 's', findingsBySeverity: {}, estateFindings: 0, items: [
+      { id: 'w1', resource: 'shop/Deployment/web', kind: 'Deployment', namespace: 'shop', name: 'web', state: 'Assessed', blockers: 0, reviews: 1, updatedAt: '', platform: null, platformDetected: null, platformOverride: null },
+      { id: 'w2', resource: 'cert-manager/Deployment/cert-manager', kind: 'Deployment', namespace: 'cert-manager', name: 'cert-manager', state: 'Assessed', blockers: 0, reviews: 2, updatedAt: '',
+        platform: manager === 'app' ? null : 'cert-manager add-on (namespace cert-manager)', platformDetected: 'cert-manager add-on (namespace cert-manager)', platformOverride: manager }] } });
+    const calls = mockApi({
+      ...base,
+      'GET /api/projects/p1/jobs': () => ({ status: 200, body: { items: [] } }),
+      'GET /api/projects/p1/workloads': list,
+      'GET /api/projects/p1/workloads/w2': () => ({ status: 200, body: { id: 'w2', resource: 'cert-manager/Deployment/cert-manager', kind: 'Deployment', namespace: 'cert-manager', name: 'cert-manager', state: 'Assessed', edges: [], findings: [] } }),
+      'PUT /api/projects/p1/workloads/w2/classification': () => { manager = 'app'; return { status: 200, body: {} }; },
+      'GET /api/projects/p1/workloads/w2/pilot': () => ({ status: 200, body: { workload: '', state: '', containers: [], plan: null, planInputs: null, runs: [], target: null } }),
+    });
+    render(<App />);
+    expect(await screen.findByText('web')).toBeTruthy();
+    expect(screen.queryByLabelText('Open cert-manager/cert-manager')).toBeNull();
+    expect(screen.getByRole('tab', { name: 'Platform add-ons (1)' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: 'Platform add-ons (1)' }));
+    fireEvent.click(await screen.findByLabelText('Open cert-manager/cert-manager'));
+    fireEvent.click(await screen.findByText('Treat as an application'));
+    await waitFor(() => expect(JSON.parse(String(calls.find(c => c.url.endsWith('/w2/classification'))?.init?.body ?? '{}'))).toEqual({ as: 'app' }));
+    expect(await screen.findByRole('tab', { name: 'Applications (2)' })).toBeTruthy();
+  });
 });

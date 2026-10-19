@@ -59,15 +59,28 @@ function generate(raw,options={}){
  const matches=r=>r.spec?.selector&&Object.keys(r.spec.selector).length&&Object.entries(r.spec.selector).every(([k,v])=>labels[k]===v);
  const services=items.filter(r=>r.kind==='Service'&&sameNS(r)&&matches(r));
  for(const r of services){
-  if((r.spec.type||'ClusterIP')!=='ClusterIP'){omitted.push(E.id(r));block('Matching Service is not ClusterIP; load-balancer and NodePort translation require a separate mapping.',E.id(r));continue;}
+  const sourceType=r.spec.type||'ClusterIP',exposed=sourceType==='LoadBalancer'||sourceType==='NodePort';
+  if(sourceType!=='ClusterIP'&&!exposed){omitted.push(E.id(r));block('Matching Service is type '+sourceType+'; only ClusterIP, LoadBalancer and NodePort Services can be piloted.',E.id(r));continue;}
   const peers=items.filter(x=>['Deployment','StatefulSet','DaemonSet','Pod','ReplicaSet','Job','CronJob'].includes(x.kind)&&sameNS(x)&&E.id(x)!==E.id(work)&&Object.entries(r.spec.selector).every(([k,v])=>(x.spec?.template?.metadata?.labels||x.spec?.jobTemplate?.spec?.template?.metadata?.labels||x.metadata.labels||{})[k]===v));
   if(peers.length){omitted.push(E.id(r));block('Service selector matches additional source resources. Review shared routing before exporting the Service.',E.id(r));continue;}
   if(!/^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$/.test(r.metadata.name||''))block('Service name is not a valid Kubernetes name; the inventory may be edited or corrupted.',E.id(r));
   const service={apiVersion:'v1',kind:'Service',metadata:metadata(r),spec:clone(r.spec)};service.metadata.namespace=ns;
+  if(exposed){
+   // The pilot is reached only through a port-forward: an exposed Service is copied as ClusterIP so the
+   // pilot never receives external traffic. External exposure is mapped to the target at cutover.
+   const note=(path,before)=>changes.push({resource:E.id(r),path,before,after:'Removed: pilot copy is ClusterIP; map exposure at cutover'});
+   service.spec.type='ClusterIP';note('spec.type',sourceType);
+   for(const key of ['externalTrafficPolicy','loadBalancerIP','loadBalancerClass','loadBalancerSourceRanges','allocateLoadBalancerNodePorts','healthCheckNodePort','externalIPs'])if(key in service.spec){delete service.spec[key];note('spec.'+key,'Source exposure setting');}
+   for(const port of service.spec.ports||[])if(port.nodePort){const was=String(port.nodePort);delete port.nodePort;note('spec.ports.'+(port.name||port.port)+'.nodePort',was);}
+   // Annotations on an exposed Service mostly drive exposure (load balancers, DNS, tailnets, cluster meshes): the pilot copy keeps none.
+   for(const key of Object.keys(service.metadata.annotations||{})){delete service.metadata.annotations[key];note('metadata.annotations.'+key,'Source annotation on an exposed Service');}
+   if(service.metadata.annotations&&!Object.keys(service.metadata.annotations).length)delete service.metadata.annotations;
+   need(E.id(r),'Exposure: '+sourceType+' on the source; the pilot copy is ClusterIP and receives no external traffic. At cutover, map the VKS load balancer (NSX or Avi), addresses, health checks, source ranges and DNS.');
+  }
   for(const key of ['clusterIP','clusterIPs','ipFamilies','ipFamilyPolicy','healthCheckNodePort'])if(key in service.spec&&!(key==='clusterIP'&&service.spec[key]==='None')){delete service.spec[key];changes.push({resource:E.id(r),path:'spec.'+key,before:'Source-assigned networking',after:'Destination allocation/default'});}
-  if(r.spec.externalIPs?.length||r.spec.loadBalancerIP||r.spec.loadBalancerClass)block('Service has infrastructure-bound addresses or controller configuration; review manually.',E.id(r));
+  if(service.spec.externalIPs?.length||service.spec.loadBalancerIP||service.spec.loadBalancerClass)block('Service has infrastructure-bound addresses or controller configuration; review manually.',E.id(r));
   for(const port of service.spec.ports||[])if(port.nodePort){delete port.nodePort;block('ClusterIP Service contains a nodePort assignment; review desired-state schema.',E.id(r));}
-  for(const key of Object.keys(r.metadata.annotations||{}))if(/aws|azure|gke|load.?balancer|external-dns/i.test(key))block(`Service annotation needs target-specific review: ${key}.`,E.id(r));
+  for(const key of Object.keys(service.metadata.annotations||{}))if(/aws|azure|gke|load.?balancer|external-dns|tailscale\.com\/|cilium\.io|io\.cilium\/|metallb\.|ako\.vmware\.com/i.test(key))block(`Service annotation needs target-specific review: ${key}.`,E.id(r));
   manifests.items.push(service);
  }
  for(const r of items.filter(sameNS))if(['Ingress','HTTPRoute','Gateway','HorizontalPodAutoscaler','PodDisruptionBudget','NetworkPolicy'].includes(r.kind)){omitted.push(E.id(r));need(E.id(r),'Review and provision separately. This generator exports only the selected Deployment and isolated ClusterIP Services; routing, policy, disruption and scaling behavior remain unverified.');}

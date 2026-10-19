@@ -64,6 +64,9 @@ export function ProjectView({ id }: { id: string }) {
     return () => clearInterval(t);
   }, [active.length, id, load, applyJobs]);
 
+  const apps = useMemo(() => workloads?.items.filter(w => !w.platform) ?? [], [workloads]);
+  const platform = useMemo(() => workloads?.items.filter(w => w.platform) ?? [], [workloads]);
+  const [view, setView] = useState<'apps' | 'platform'>('apps');
   if (!project) return error ? <div className="alert error" role="alert">{error}</div> : <p aria-busy="true">Loading…</p>;
 
   const act = async (fn: () => Promise<unknown>, done?: string) => {
@@ -83,7 +86,7 @@ export function ProjectView({ id }: { id: string }) {
     await api(`/api/projects/${id}/snapshots`, { method: 'POST', body: JSON.stringify({ side, inventory }) });
   }, `${file.name} imported and analysed.`);
 
-  const counts = workloads?.items.reduce((a, w) => ({ blocked: a.blocked + (w.state === 'Blocked' ? 1 : 0), review: a.review + (w.state !== 'Blocked' && w.reviews ? 1 : 0) }), { blocked: 0, review: 0 }) ?? { blocked: 0, review: 0 };
+  const counts = apps.reduce((a, w) => ({ blocked: a.blocked + (w.state === 'Blocked' ? 1 : 0), review: a.review + (w.state !== 'Blocked' && w.reviews ? 1 : 0) }), { blocked: 0, review: 0 });
 
   return (
     <>
@@ -127,17 +130,23 @@ export function ProjectView({ id }: { id: string }) {
 
       {workloads && workloads.items.length > 0 && (<>
         <div className="tiles">
-          <div className="tile"><div className="k">Workloads</div><div className="v">{workloads.items.length}</div></div>
+          <div className="tile"><div className="k">Applications</div><div className="v">{apps.length}</div></div>
           <div className="tile"><div className="k">Blocked</div><div className="v text-danger">{counts.blocked}</div></div>
           <div className="tile"><div className="k">Need review</div><div className="v">{counts.review}</div></div>
+          <div className="tile"><div className="k">Platform add-ons</div><div className="v">{platform.length}</div></div>
           <div className="tile"><div className="k">Estate-wide findings</div><div className="v">{workloads.estateFindings}</div></div>
         </div>
-        <Workloads items={workloads.items} onOpen={setSelected} />
+        <div className="segmented" role="tablist" aria-label="Workload type">
+          <button role="tab" aria-selected={view === 'apps'} className={view === 'apps' ? 'on' : ''} onClick={() => setView('apps')}>Applications ({apps.length})</button>
+          <button role="tab" aria-selected={view === 'platform'} className={view === 'platform' ? 'on' : ''} onClick={() => setView('platform')}>Platform add-ons ({platform.length})</button>
+        </div>
+        {view === 'platform' && <p className="hint">Services that come with the cluster or its platform: VKS system components, Carvel packages, mesh, certificates, identity and backup. They are usually installed on the target from its own packages rather than migrated. The counts above leave them out.</p>}
+        <Workloads key={view} items={view === 'apps' ? apps : platform} platform={view === 'platform'} onOpen={setSelected} />
         <EstateFindings key={workloads.snapshotId ?? 'none'} projectId={id} />
       </>)}
 
       {snapshots.length > 0 && <Snapshots key={snapshots[0]?.id} projectId={id} items={snapshots} />}
-      {selected && <WorkloadPanel projectId={id} workloadId={selected} onClose={() => setSelected(undefined)} />}
+      {selected && <WorkloadPanel projectId={id} workloadId={selected} workload={workloads?.items.find(w => w.id === selected)} onClassified={() => void load()} onClose={() => setSelected(undefined)} />}
     </>
   );
 }
@@ -150,7 +159,7 @@ function ImportButton({ onFile, disabled }: { onFile: (f: File) => void; disable
   </>);
 }
 
-function Workloads({ items, onOpen }: { items: Workload[]; onOpen: (id: string) => void }) {
+function Workloads({ items, platform, onOpen }: { items: Workload[]; platform: boolean; onOpen: (id: string) => void }) {
   const [q, setQ] = useState('');
   const [state, setState] = useState('');
   const shown = useMemo(() => items.filter(w => (!state || w.state === state) && (!q || w.resource.toLowerCase().includes(q.toLowerCase()))), [items, q, state]);
@@ -160,18 +169,20 @@ function Workloads({ items, onOpen }: { items: Workload[]; onOpen: (id: string) 
       <div className="filters">
         <h3>Workloads</h3>
         <input aria-label="Search workloads" placeholder="Search namespace or name" value={q} onChange={e => setQ(e.target.value)} />
-        <select aria-label="Filter by state" value={state} onChange={e => setState(e.target.value)}>
+        {!platform && <select aria-label="Filter by state" value={state} onChange={e => setState(e.target.value)}>
           <option value="">All states</option>
           {states.map(s => <option key={s} value={s}>{STATE_LABEL[s] ?? s}</option>)}
-        </select>
+        </select>}
       </div>
       <table>
-        <thead><tr><th>Namespace</th><th>Workload</th><th>Kind</th><th>State</th><th>Blockers</th><th>Review</th></tr></thead>
+        <thead><tr><th>Namespace</th><th>Workload</th><th>Kind</th>{platform ? <th>Why</th> : <><th>State</th><th>Blockers</th><th>Review</th></>}</tr></thead>
         <tbody>{shown.map(w => (
           <tr key={w.id} className="clickable" tabIndex={0} aria-label={`Open ${w.namespace}/${w.name}`} onClick={() => onOpen(w.id)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(w.id); } }}>
             <td>{w.namespace}</td><td>{w.name}</td><td>{w.kind}</td>
-            <td><span className={`badge state-${w.state}`}>{STATE_LABEL[w.state] ?? w.state}</span></td>
-            <td>{w.blockers || ''}</td><td>{w.reviews || ''}</td>
+            {platform ? <td className="hint">{w.platform}</td> : <>
+              <td><span className={`badge state-${w.state}`}>{STATE_LABEL[w.state] ?? w.state}</span></td>
+              <td>{w.blockers || ''}</td><td>{w.reviews || ''}</td>
+            </>}
           </tr>
         ))}</tbody>
       </table>
@@ -194,7 +205,7 @@ function FindingList({ items }: { items: Finding[] }) {
   );
 }
 
-function WorkloadPanel({ projectId, workloadId, onClose }: { projectId: string; workloadId: string; onClose: () => void }) {
+function WorkloadPanel({ projectId, workloadId, workload, onClassified, onClose }: { projectId: string; workloadId: string; workload?: Workload; onClassified: () => void; onClose: () => void }) {
   const [detail, setDetail] = useState<WorkloadDetail>();
   const [error, setError] = useState<string>();
   const close = useRef<HTMLButtonElement>(null);
@@ -218,6 +229,7 @@ function WorkloadPanel({ projectId, workloadId, onClose }: { projectId: string; 
       {!detail && !error && <p aria-busy="true">Loading…</p>}
       {detail && (<>
         <p className="hint">{detail.kind} · {STATE_LABEL[detail.state] ?? detail.state}</p>
+        {workload && <Classification projectId={projectId} workload={workload} onChanged={onClassified} />}
         <h3>Findings</h3>
         <FindingList items={detail.findings} />
         {detail.kind === 'Deployment' && <PilotSection projectId={projectId} workloadId={workloadId} />}
@@ -227,6 +239,25 @@ function WorkloadPanel({ projectId, workloadId, onClose }: { projectId: string; 
         </>)}
       </>)}
     </aside>
+  );
+}
+
+/** Whether a workload is an application or a platform add-on, with the operator's override. */
+function Classification({ projectId, workload, onChanged }: { projectId: string; workload: Workload; onChanged: () => void }) {
+  const [error, setError] = useState<string>();
+  const set = async (as: 'app' | 'platform' | null) => {
+    setError(undefined);
+    try { await api(`/api/projects/${projectId}/workloads/${workload.id}/classification`, { method: 'PUT', body: JSON.stringify({ as }) }); onChanged(); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Could not change the classification.'); }
+  };
+  return (
+    <div className="classification">
+      {workload.platform
+        ? <p><span className="badge">Platform add-on</span> <span className="hint">{workload.platform}</span> <button className="link" onClick={() => void set('app')}>Treat as an application</button></p>
+        : <p><span className="hint">Application{workload.platformOverride === 'app' && workload.platformDetected ? ` (your choice; detected as: ${workload.platformDetected})` : ''}.</span> <button className="link" onClick={() => void set('platform')}>Mark as a platform add-on</button></p>}
+      {workload.platformOverride && <p><button className="link" onClick={() => void set(null)}>Use the automatic classification</button></p>}
+      {error && <div className="alert error" role="alert">{error}</div>}
+    </div>
   );
 }
 

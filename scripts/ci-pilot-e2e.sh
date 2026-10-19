@@ -22,6 +22,8 @@ echo "== Source workload"
 kubectl --context kind-source create namespace app
 kubectl --context kind-source -n app create deployment web --image=nginx:1.27-alpine --port=80
 kubectl --context kind-source -n app expose deployment web --port=80 --target-port=80
+# A LoadBalancer Service too (it stays pending on kind): the pilot copies it as ClusterIP.
+kubectl --context kind-source -n app expose deployment web --name=web-lb --type=LoadBalancer --port=80 --target-port=80
 kubectl --context kind-source -n app rollout status deploy/web --timeout=180s
 digest=$(kubectl --context kind-source -n app get pods -l app=web -o jsonpath='{.items[0].status.containerStatuses[0].imageID}' | sed 's#^docker-pullable://##')
 case "$digest" in *@sha256:*) ;; *) echo "No digest from imageID: $digest"; exit 1;; esac
@@ -69,20 +71,18 @@ expect_state "$run" PilotPassed
 on_target=$(kubectl --context kind-target -n app get deploy web -o jsonpath='{.metadata.labels.migration-studio\.openai/pilot-run}')
 [ -n "$on_target" ] && [ "$on_target" = "$(api GET "/runs/$run" | py 'print(d["runLabel"])')" ] || { echo "run label on target ($on_target) does not match the run"; exit 1; }
 kubectl --context kind-target -n app get deploy,svc
+lb_type=$(kubectl --context kind-target -n app get svc web-lb -o jsonpath='{.spec.type}')
+[ "$lb_type" = ClusterIP ] || { echo "web-lb on the target is $lb_type, expected ClusterIP"; exit 1; }
 api POST "/runs/$run/observe" -d '{}' >/dev/null
 expect_state "$run" PilotPassed
 api POST "/runs/$run/inspect" -d '{}' >/dev/null
 expect_state "$run" Inspected
 label=$(api GET "/runs/$run" | py 'print(d["runLabel"])')
 api POST "/runs/$run/cleanup" -d "{\"confirmRun\":\"$label\",\"acknowledgeExternalState\":true}" >/dev/null
+# Foreground deletion takes a moment; the engine re-inspects on its own until the objects are gone.
 state=$(wait_run "$run")
-# Foreground deletion can take a moment: inspect until absent.
-for _ in $(seq 1 10); do
-  [ "$state" = Cleaned ] || [ "$state" = Absent ] && break
-  sleep 5; api POST "/runs/$run/inspect" -d '{}' >/dev/null; state=$(wait_run "$run")
-done
 echo "final state: $state"
-[ "$state" = Cleaned ] || [ "$state" = Absent ] || { api GET "/runs/$run"; exit 1; }
+[ "$state" = Cleaned ] || { api GET "/runs/$run"; exit 1; }
 [ -z "$(kubectl --context kind-target -n app get deploy,svc -o name)" ] || { echo "Pilot objects remain on the target"; exit 1; }
 api GET "/runs/$run" | py 'print([s["step"]+":"+s["status"] for s in d["steps"]])'
 echo "Pilot end-to-end passed."

@@ -58,6 +58,21 @@ describe('run page', () => {
   });
 });
 
+describe('run page, clean-up in progress', () => {
+  it('shows a pending clean-up as deleting, not failed, and hides steps that did not run', async () => {
+    window.history.replaceState(null, '', '/runs?run=r1');
+    mockApi({ 'GET /api/runs/r1': () => ({ status: 200, body: { ...run('CleanupPending', ['inspect']), steps: [
+      { id: 'e1', step: 'validate', status: 'Passed', observedAt: new Date().toISOString(), summary: { rollout: { status: 'NotRun', detail: '' }, smoke: { status: 'NotRun', detail: '' } } },
+      { id: 'e2', step: 'cleanup', status: 'Pending', observedAt: new Date().toISOString(), summary: {} },
+    ] } }) });
+    render(<App />);
+    const badge = await screen.findByText('Deleting');
+    expect(badge.className).toContain('step-wait');
+    expect(screen.queryByText(/NotRun/)).toBeNull();
+    expect(screen.getByText(/Kubernetes is still finishing it/)).toBeTruthy();
+  });
+});
+
 describe('run page, refreshed confirmation', () => {
   it('reloads the run before asking for the run ID, which an inspection can change', async () => {
     window.history.replaceState(null, '', '/runs?run=r1');
